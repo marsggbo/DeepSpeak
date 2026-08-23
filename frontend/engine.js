@@ -11,7 +11,7 @@ const DeepSpeakEngine = (() => {
   // 动作 → (允许的状态, 目标状态)
   const FOCUS_ACTS = {
     listen_again: [["new", "listening"], "listening"],
-    listen_done: [["listening"], "dictation"],
+    listen_done: [["new", "listening"], "dictation"],  // 对齐后端：new 也允许（首次点主按钮不再静默失败）
     dict_done: [["listening", "dictation"], "shadowing"],
     shadow_done: [["shadowing"], "offscript"],
     offscript_done: [["offscript"], "review_due"],

@@ -2817,6 +2817,39 @@ async function viewSettings() {
       </div>
     </div>
 
+    <div class="section-title">🎨 界面</div>
+    <div class="card">
+      <div class="setting-row">
+        <div><div class="label">主题</div><div class="desc">白天 / 黑夜模式，选择后立即生效</div></div>
+        <div class="gen-seg" id="theme-seg">
+          <button class="btn sm ${currentTheme() === "light" ? "primary" : ""}" data-theme-val="light">☀️ 白天</button>
+          <button class="btn sm ${currentTheme() === "dark" ? "primary" : ""}" data-theme-val="dark">🌙 夜间</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-title">📖 使用指南</div>
+    <div class="card">
+      <details id="guide-details">
+        <summary style="cursor:pointer;font-weight:600">第一次用 DeepSpeak？点开看设计思路与使用流程（约 1 分钟）</summary>
+        <div style="margin-top:10px;font-size:14px;line-height:1.9">
+          <b>设计理念</b>：少而精，练透为止。不追求刷量，每一句都按「听清 → 写对 → 说出」三步练透，再靠间隔复习变成长期记忆。
+          <br><br>
+          <b>① 导入材料</b>：材料页 → 导入内容（音频/视频文件、YouTube 链接、字幕、纯文本），或「✨ AI 生成」让 AI 按场景生成对话。导入后自动转写、按句切分。
+          <br>
+          <b>② 整段精听（尚雯婕法）</b>：材料详情 → 整段精听。通听（不看文字反复听）→ 逐句听写 → 红笔校对 → 跟读 → 脱稿背诵（可用话筒整段背诵对照）。系统按间隔安排回炉复习。
+          <br>
+          <b>③ 逐句强化</b>：材料详情 → 逐句强化。盲听 → 听写 → 对照理解 → 跟读 → 主动回忆，一句练完 Bingo 进入下一句。
+          <br>
+          <b>④ 复习与今日</b>：今日页显示到期复习；复习页集中处理。生词与高价值表达点 ⭐ 收藏到生词本，随时回顾。
+          <br>
+          <b>小技巧</b>：任意页面双击单词/短语可查释义（词库 → 在线词典 → AI）；听写检查发现原文有错，点「✏️ 原文有误？纠正」。
+          <br>
+          <b>能力说明</b>：桌面版内置语音识别与合成（whisper + Kokoro，全离线）；网页/安卓版没有这两项（跟读可打字，听写可用浏览器语音输入或打字），其余功能一致。
+        </div>
+      </details>
+    </div>
+
     <div class="section-title">🔒 隐私</div>
     <div class="card">
       <div class="setting-row">
@@ -2892,6 +2925,13 @@ async function viewSettings() {
     }));
   };
   renderProviders();
+
+  // 主题切换（设置页）
+  $$("#theme-seg button").forEach(b => b.addEventListener("click", () => {
+    applyTheme(b.dataset.themeVal);
+    $$("#theme-seg button").forEach(x => x.classList.remove("primary"));
+    b.classList.add("primary");
+  }));
 
   // 类型切换自动填充
   $("#pv-type").addEventListener("change", (e) => {
