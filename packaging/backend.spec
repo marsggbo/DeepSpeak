@@ -23,10 +23,10 @@ if os.path.isdir(os.path.join(ROOT, "models")):
 binaries = []
 hiddenimports = []
 
-# 大型二进制/数据包：ctranslate2 / PyAV / onnxruntime 需要完整收集 .so 与数据
+# 大型二进制/数据包：ctranslate2 / onnxruntime 需要完整收集 .so 与数据
+# （av/PyAV 后端未使用，不收集——省 ~43MB）
 for pkg in (
     "ctranslate2",
-    "av",
     "onnxruntime",
     "faster_whisper",
     "tokenizers",
@@ -49,6 +49,7 @@ hiddenimports += [
     "backend.diffing",
     "backend.extract",
     "backend.focus",
+    "backend.generate",
     "backend.importers",
     "backend.paths",
     "backend.pipeline",

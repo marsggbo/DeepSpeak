@@ -37,9 +37,12 @@ async function api(path, opts) {
   let data = null;
   let isJson = false;
   try { data = await res.json(); isJson = true; } catch (e) { /* 非 JSON */ }
-  if (!res.ok) {
-    // 静态托管（GitHub Pages 等）无后端 → 404 HTML → 本地引擎
-    if (!isJson && res.status === 404) {
+  if (!res.ok || !isJson) {
+    // 无后端环境 → 本地引擎。覆盖三种形态：
+    //   404 + HTML（GitHub Pages 静态托管 / 本机无 API）
+    //   200 + HTML（Capacitor APK 的 SPA fallback 把未知路径回退到 index.html）
+    //   网络错误（离线，已在上方 catch）
+    if (!isJson) {
       const eng = useLocalEngine();
       if (eng) return eng.api(init.method, path, opts.body);
     }
@@ -1149,10 +1152,6 @@ async function viewUnit(hash) {
           <span class="chip gray" style="margin-left:6px" title="难度 1-10（生词率/句长）；学习价值 0-100（场景、句式、难度自动评分）">难度 ${u.difficulty} · 💎 学习价值 ${u.learning_value}</span>
         </div>
       </div>
-      <div class="unit-nav">
-        ${unitNav.prev ? `<a class="btn sm" href="#/unit/${unitNav.prev.id}">← 上一句</a>` : ""}
-        ${unitNav.next ? `<a class="btn sm" href="#/unit/${unitNav.next.id}">下一句 →</a>` : ""}
-      </div>
     </div>
     <div class="studio" id="studio"></div>
   `;
@@ -1695,23 +1694,18 @@ async function showStep(key) {
       </div>`;
   }
 
-  // 步骤导航：上一步/下一步（UI 层自由切换，后端状态仅在提交动作时变更）+ 上一句/下一句
+  // 步骤导航：只保留「← 上一步」回退（前进由各面板主按钮承担，避免按钮重复）；
+  // 句子切换用两侧悬浮大箭头
   if (key !== "done" && key !== "r_done") {
     const steps = studioCtx.review ? REVIEW_STEPS : STEP_DEFS;
     const idx = steps.findIndex(s => s.key === key);
-    if (idx >= 0) {
-      const prevKey = idx > 0 ? steps[idx - 1].key : null;
-      // 主动回忆的"下一步"直达完成（跳过）：ACTIVE_RECALL → REVIEW_DUE
-      const nextKey = (idx < steps.length - 1 && steps[idx + 1].key !== "done" && steps[idx + 1].key !== "r_done")
-        ? steps[idx + 1].key : null;
+    if (idx >= 0 && idx > 0) {
+      const prevKey = steps[idx - 1].key;
       const nav = document.createElement("div");
       nav.className = "step-nav";
       nav.innerHTML = `
-        ${unitNav.prev ? `<a class="btn sm" href="#/unit/${unitNav.prev.id}">← 上一句</a>` : ""}
-        ${prevKey ? `<button class="btn sm" data-nav="prev">← 上一步</button>` : ""}
-        ${nextKey ? `<button class="btn sm primary" data-nav="next">下一步 →</button>` : ""}
+        <button class="btn sm" data-nav="prev">← 上一步</button>
         ${key === "recall" ? `<button class="btn sm primary" data-nav="skip">跳过，完成本句 →</button>` : ""}
-        ${unitNav.next ? `<a class="btn sm" href="#/unit/${unitNav.next.id}">下一句 →</a>` : ""}
       `;
       nav.querySelectorAll("button[data-nav]").forEach(b =>
         b.addEventListener("click", async () => {
@@ -1723,7 +1717,7 @@ async function showStep(key) {
             } catch (e) { toast(e.message, "error"); }
             return;
           }
-          showStep(b.dataset.nav === "prev" ? prevKey : nextKey);
+          showStep(prevKey);
         }));
       panel.appendChild(nav);
     }
