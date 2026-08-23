@@ -24,9 +24,10 @@ binaries = []
 hiddenimports = []
 
 # 大型二进制/数据包：ctranslate2 / onnxruntime 需要完整收集 .so 与数据
-# （av/PyAV 后端未使用，不收集——省 ~43MB）
+# （av/PyAV 是 faster-whisper 解码音频的硬依赖，必须收集）
 for pkg in (
     "ctranslate2",
+    "av",
     "onnxruntime",
     "faster_whisper",
     "tokenizers",
