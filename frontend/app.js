@@ -1130,7 +1130,7 @@ async function viewUnit(hash) {
   unitNav = { prev: null, next: null };
   try {
     const mat = await api(`/api/materials/${u.material_id}`);
-    const units = mat.units || [];
+    const units = mat.units || (mat.material && mat.material.units) || [];
     const idx = units.findIndex(x => x.id === unitId);
     if (idx > 0) unitNav.prev = units[idx - 1];
     if (idx >= 0 && idx < units.length - 1) unitNav.next = units[idx + 1];

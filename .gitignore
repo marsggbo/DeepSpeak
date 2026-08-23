@@ -18,7 +18,6 @@ build/
 dist/
 packaging/build/
 packaging/dist/
-packaging/*.spec
 electron/release/
 docs/
 
