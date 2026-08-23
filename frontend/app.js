@@ -305,6 +305,9 @@ async function updateReviewBadge() {
 
 let _lastHash = location.hash || "#/";
 const LEARNING_HASH = /^#\/(unit\/\d+|focus\/\d+)/;
+// 页面栈：供安卓返回键逐页后退（WebView 历史对 hash 路由不可靠）
+let _pageStack = [_lastHash];
+let _backNav = false;
 // 退出提醒：默认每次提醒；用户勾选「今后不再提醒」后写 settings.exit_confirm=0
 let _exitConfirmEnabled = true;
 let _skipExitConfirm = false;
@@ -331,9 +334,25 @@ window.addEventListener("hashchange", () => {
     }
   }
   _skipExitConfirm = false;
+  if (!_backNav && next !== _pageStack[_pageStack.length - 1]) {
+    _pageStack.push(next);
+    if (_pageStack.length > 50) _pageStack.shift();
+  }
+  _backNav = false;
   _lastHash = next;
   router();
 });
+
+// 安卓返回键（MainActivity onBackPressed 调用）：逐页后退；无上一页返回 false 表示可退出
+window.__onBackPressed = () => {
+  if (_pageStack.length > 1) {
+    _pageStack.pop();
+    _backNav = true;
+    location.hash = _pageStack[_pageStack.length - 1];
+    return true;
+  }
+  return false;
+};
 
 function askExitConfirm() {
   modal(`

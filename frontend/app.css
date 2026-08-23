@@ -54,7 +54,7 @@ body {
 a { color: var(--accent2); text-decoration: none; }
 button { font-family: inherit; }
 
-#app { display: flex; min-height: 100vh; }
+#app { display: flex; min-height: 100vh; padding-top: env(safe-area-inset-top, 0px); }
 
 /* ---------- Sidebar ---------- */
 .sidebar {
@@ -73,11 +73,11 @@ nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
   display: flex; align-items: center; gap: 10px;
   padding: 10px 12px; border-radius: 10px;
   color: var(--muted); font-weight: 500;
+  position: relative;
   transition: background .15s, color .15s;
 }
 .nav-item:hover { background: var(--card); color: var(--text); }
 .nav-item.active { background: rgba(108,140,255,.14); color: var(--accent2); }
-.nav-ico { font-size: 16px; }
 .nav-badge {
   margin-left: auto; background: var(--accent); color: #fff;
   font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 99px;
@@ -447,9 +447,8 @@ kbd { background: var(--bg2); border: 1px solid var(--border); border-radius: 5p
   }
   .logo, .sidebar-foot { display: none; }
   nav { flex-direction: row; justify-content: space-around; flex: 1; gap: 2px; }
-  .nav-item { flex-direction: column; gap: 1px; padding: 6px 4px; font-size: 10px; }
+  .nav-item { flex-direction: row; gap: 6px; padding: 8px 10px; font-size: 13px; }
   .nav-label { display: block; }
-  .nav-ico { font-size: 19px; }
   .nav-badge { position: absolute; margin-left: 0; transform: translate(14px, -14px); }
   main { padding: 14px 12px 92px; }
   .focus-dict-row { flex-wrap: wrap; }
