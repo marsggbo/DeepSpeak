@@ -474,31 +474,6 @@ kbd { background: var(--bg2); border: 1px solid var(--border); border-radius: 5p
 .explainer-src { font-size: 12px; color: var(--accent, #6ec6ff); margin-bottom: 4px; }
 .explainer-close { position: absolute; top: 6px; right: 8px; background: none; border: none; color: var(--muted, #9aa3b2); cursor: pointer; font-size: 13px; line-height: 1; }
 
-/* ===== 逐句强化：大右箭头（跳下一句）+ Bingo 完成反馈 ===== */
-.unit-arrow {
-  position: fixed; top: 50%; transform: translateY(-50%);
-  z-index: 900; display: flex; align-items: center; gap: 8px;
-  text-decoration: none; cursor: pointer;
-}
-.unit-arrow.next { right: 22px; }
-.unit-arrow.prev { left: 22px; flex-direction: row-reverse; }
-.unit-arrow .arrow-body {
-  width: 56px; height: 56px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 24px; color: #fff; background: var(--accent, #6ec6ff);
-  box-shadow: 0 6px 20px rgba(110, 198, 255, .45);
-  transition: transform .15s ease, box-shadow .15s ease;
-}
-.unit-arrow:hover .arrow-body { transform: scale(1.12); box-shadow: 0 8px 26px rgba(110, 198, 255, .65); }
-.unit-arrow .arrow-tip {
-  position: absolute; white-space: nowrap;
-  background: var(--tooltip-bg); color: var(--tooltip-text); font-size: 13px;
-  padding: 6px 12px; border-radius: 8px; opacity: 0; pointer-events: none;
-  transition: opacity .15s ease; box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
-}
-.unit-arrow.next .arrow-tip { right: 68px; }
-.unit-arrow.prev .arrow-tip { left: 68px; }
-.unit-arrow:hover .arrow-tip { opacity: 1; }
 
 .bingo-pop {
   position: fixed; inset: 0; z-index: 950; pointer-events: none;

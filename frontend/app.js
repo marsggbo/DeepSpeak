@@ -264,8 +264,7 @@ const routes = {
 async function router() {
   const hash = location.hash || "#/";
   stopPlay();
-  // 切页清理：移除逐句强化的大箭头、停止精听音频轮询、销毁录音器
-  document.querySelectorAll(".unit-arrow").forEach(el => el.remove());
+  // 切页清理：停止精听音频轮询、销毁录音器
   if (focusCtx) focusCtx.pollStop = true;
   if (studioCtx && studioCtx.recorder) {
     try { studioCtx.recorder.destroy(); } catch (e) { /* ignore */ }
@@ -1152,6 +1151,10 @@ async function viewUnit(hash) {
           <span class="chip gray" style="margin-left:6px" title="难度 1-10（生词率/句长）；学习价值 0-100（场景、句式、难度自动评分）">难度 ${u.difficulty} · 💎 学习价值 ${u.learning_value}</span>
         </div>
       </div>
+      <div class="unit-nav">
+        ${unitNav.prev ? `<a class="btn sm" href="#/unit/${unitNav.prev.id}" title="上一句">← 上一句</a>` : ""}
+        ${unitNav.next ? `<a class="btn sm primary" href="#/unit/${unitNav.next.id}" title="下一句">下一句 →</a>` : ""}
+      </div>
     </div>
     <div class="studio" id="studio"></div>
   `;
@@ -1214,22 +1217,7 @@ function bingoFeedback() {
 }
 
 function renderUnitArrow() {
-  /* 左右大箭头：随时跳到上一句/下一句（不放界面里，悬浮在两侧），hover 提示 */
-  document.querySelectorAll(".unit-arrow").forEach(el => el.remove());
-  if (unitNav.prev) {
-    const a = document.createElement("a");
-    a.className = "unit-arrow prev";
-    a.href = "#/unit/" + unitNav.prev.id;
-    a.innerHTML = `<span class="arrow-body">◀</span><span class="arrow-tip">回到上一句</span>`;
-    document.body.appendChild(a);
-  }
-  if (unitNav.next) {
-    const a = document.createElement("a");
-    a.className = "unit-arrow next";
-    a.href = "#/unit/" + unitNav.next.id;
-    a.innerHTML = `<span class="arrow-body">➤</span><span class="arrow-tip">跳过该句进入下一句</span>`;
-    document.body.appendChild(a);
-  }
+  /* 句子切换在页面右上角（unit-nav），不再使用悬浮箭头 */
 }
 
 /* ================= 主题（白天/黑夜） ================= */
