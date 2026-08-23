@@ -72,12 +72,17 @@ nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .nav-item {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 12px; border-radius: 10px;
-  color: var(--muted); font-weight: 500;
+  color: var(--text); font-weight: 500;
   position: relative;
   transition: background .15s, color .15s;
 }
-.nav-item:hover { background: var(--card); color: var(--text); }
-.nav-item.active { background: rgba(108,140,255,.14); color: var(--accent2); }
+.nav-item:hover { background: var(--card); color: var(--accent2); }
+/* 选中态：蓝色文字 + 左侧指示条（无背景框，简洁有边界） */
+.nav-item.active { color: var(--accent2); font-weight: 700; background: transparent; }
+.nav-item.active::before {
+  content: ""; position: absolute; left: 0; top: 22%; bottom: 22%;
+  width: 3px; border-radius: 3px; background: var(--accent2);
+}
 .nav-badge {
   margin-left: auto; background: var(--accent); color: #fff;
   font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 99px;
@@ -448,6 +453,7 @@ kbd { background: var(--bg2); border: 1px solid var(--border); border-radius: 5p
   .logo, .sidebar-foot { display: none; }
   nav { flex-direction: row; justify-content: space-around; flex: 1; gap: 2px; }
   .nav-item { flex-direction: row; gap: 6px; padding: 8px 10px; font-size: 13px; }
+  .nav-item.active::before { left: 25%; right: 25%; top: auto; bottom: auto; width: auto; height: 3px; top: -6px; }
   .nav-label { display: block; }
   .nav-badge { position: absolute; margin-left: 0; transform: translate(14px, -14px); }
   main { padding: 14px 12px 92px; }

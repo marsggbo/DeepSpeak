@@ -270,13 +270,15 @@ async function router() {
     try { studioCtx.recorder.destroy(); } catch (e) { /* ignore */ }
     studioCtx.recorder = null;
   }
+  const isToday = hash === "#/" || hash === "#" || hash === "";
   $$(".nav-item").forEach(a => {
+    // 今日必须精确匹配（"#/" 前缀会吞掉所有路由，导致今日永远高亮）
     const prefix = { today: "#/", materials: "#/materials", review: "#/review", stats: "#/stats", settings: "#/settings" }[a.dataset.nav] || "#/";
-    a.classList.toggle("active", hash.startsWith(prefix));
+    const on = a.dataset.nav === "today" ? isToday : hash.startsWith(prefix);
+    a.classList.toggle("active", on);
   });
   const view = $("#view");
   view.innerHTML = `<div class="loading">加载中…</div>`;
-  const isToday = hash === "#/" || hash === "#" || hash === "";
   try {
     for (const key of Object.keys(routes)) {
       const match = key === "#/"
