@@ -1,0 +1,1282 @@
+/* DeepSpeak 本地引擎（无后端模式）：PWA / GitHub Pages 离线运行时。
+   与 backend（focus.py / review.py / diffing.py / textproc.py / wordbank.py）行为逐一对齐：
+   focus 状态机、单元状态机、WER/口语判定、间隔调度、生词、打卡统计。
+   数据存于浏览器 IndexedDB（首次启动从 BUILTIN_DATA 初始化）。 */
+"use strict";
+
+const DeepSpeakEngine = (() => {
+  // ================= 常量（与后端对齐） =================
+  const FOCUS_INTERVALS = [1, 2, 4, 7, 14, 30, 60];
+  const FOCUS_MASTER_MIN_REVIEWS = 2;
+  // 动作 → (允许的状态, 目标状态)
+  const FOCUS_ACTS = {
+    listen_again: [["new", "listening"], "listening"],
+    listen_done: [["listening"], "dictation"],
+    dict_done: [["listening", "dictation"], "shadowing"],
+    shadow_done: [["shadowing"], "offscript"],
+    offscript_done: [["offscript"], "review_due"],
+    restart: [["review_due", "mastered"], "offscript"],
+  };
+  const FOCUS_BACK_TO = { dictation: "listening", shadowing: "dictation", offscript: "shadowing" };
+
+  const TYPE_SKILL = {
+    blind_listening: "listening", review_listening: "listening",
+    dictation: "dictation", review_dictation: "dictation",
+    shadowing: "speaking", review_speaking: "speaking",
+    active_recall: "recall", review_recall: "recall",
+  };
+  const INTERVALS = [1, 2, 4, 7, 14, 30, 60];
+  const SKILL_WEIGHTS = { listening: 0.15, dictation: 0.25, recall: 0.35, speaking: 0.25 };
+  const MASTER_MIN_OVERALL = 0.80;
+  const MASTER_MIN_SKILL = 0.70;
+  const MASTER_MIN_REVIEWS = 2;
+
+  const UNIT_TRANSITIONS = {
+    NEW: { LISTENING: 1 },
+    LISTENING: { DICTATION: 1 },
+    DICTATION: { REVEALED: 1 },
+    REVEALED: { UNDERSTOOD: 1 },
+    UNDERSTOOD: { SHADOWING: 1, ACTIVE_RECALL: 1 },
+    SHADOWING: { ACTIVE_RECALL: 1, UNDERSTOOD: 1 },
+    ACTIVE_RECALL: { REVIEW_DUE: 1, SHADOWING: 1, UNDERSTOOD: 1 },
+    REVIEW_DUE: { REVIEW_DUE: 1, MASTERED: 1, ACTIVE_RECALL: 1 },
+    MASTERED: { MASTERED: 1, REVIEW_DUE: 1 },
+  };
+
+  const MINOR_SETS = [
+    new Set(["a", "an", "the"]),
+    new Set(["is", "are", "was", "were", "am", "be", "been", "do", "does", "did",
+      "can", "could", "will", "would", "shall", "should", "may", "might", "must",
+      "have", "has", "had"]),
+    new Set(["in", "on", "at", "to", "for", "of", "with", "from", "about"]),
+  ];
+
+  const CONTRACTIONS = {
+    "can't": "cannot", "won't": "will not", "don't": "do not", "doesn't": "does not",
+    "didn't": "did not", "isn't": "is not", "aren't": "are not", "wasn't": "was not",
+    "weren't": "were not", "haven't": "have not", "hasn't": "has not", "hadn't": "had not",
+    "couldn't": "could not", "wouldn't": "would not", "shouldn't": "should not",
+    "mustn't": "must not", "i'm": "i am", "i've": "i have", "i'll": "i will", "i'd": "i would",
+    "you're": "you are", "you've": "you have", "you'll": "you will", "you'd": "you would",
+    "he's": "he is", "she's": "she is", "it's": "it is", "we're": "we are", "we've": "we have",
+    "we'll": "we will", "they're": "they are", "they've": "they have", "they'll": "they will",
+    "that's": "that is", "there's": "there is", "here's": "here is", "what's": "what is",
+    "who's": "who is", "let's": "let us", "gonna": "going to", "wanna": "want to",
+    "gotta": "got to", "kinda": "kind of", "sorta": "sort of", "ain't": "is not",
+    "would've": "would have", "could've": "could have", "should've": "should have",
+    "y'all": "you all", "ma'am": "madam", "o'clock": "o clock",
+  };
+
+  const STOP_WORDS = new Set([
+    "a", "an", "the", "and", "or", "but", "so", "to", "of", "in", "on", "at",
+    "for", "with", "is", "are", "was", "were", "be", "been", "being", "am",
+    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them",
+    "my", "your", "his", "its", "our", "their", "do", "does", "did", "have",
+    "has", "had", "can", "could", "will", "would", "shall", "should", "may",
+    "might", "must", "this", "that", "these", "those", "there", "here", "not",
+    "no", "yes", "just", "very", "really", "ok", "okay", "oh", "well", "uh",
+    "um", "about", "as", "if", "then", "than", "by", "from", "into", "onto",
+    "during", "before", "after", "also", "too", "any", "some", "more", "most",
+    "much", "many", "even", "still", "yet", "only", "because", "since", "while",
+    "though", "although", "whether", "either", "neither", "both", "each",
+    "every", "few", "several", "whose", "whom", "which", "what", "who", "when",
+    "where", "why", "how", "done",
+  ]);
+
+  // 内置材料 key → 静态音频目录名（与 backend/builtin.py 的 key 一致）
+  const MATERIAL_KEYS = { 1: "restaurant_takeout", 2: "doctor_visit", 3: "news_bakery" };
+
+  // ================= 时间工具 =================
+  function pad2(n) { return String(n).padStart(2, "0"); }
+  function nowStr() {
+    const d = new Date();
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
+      `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  }
+  function todayStr() {
+    const d = new Date();
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  }
+  function daysAfter(days) {
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
+      `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  }
+  function localDateKey(isoStr) {
+    // "YYYY-MM-DD HH:MM:SS" → 本地日期（生成时已是本地时间）
+    return isoStr ? isoStr.slice(0, 10) : "";
+  }
+  function daysAgo(n) {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  }
+
+  // ================= 文本处理（对齐 textproc.py） =================
+  function normalize(text) {
+    if (!text) return "";
+    let t = String(text).trim().toLowerCase();
+    for (const k of Object.keys(CONTRACTIONS)) {
+      t = t.replace(new RegExp("\\b" + k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "g"), CONTRACTIONS[k]);
+    }
+    t = t.replace(/[.,!?;:'"()[\]{}\u2018\u2019\u201c\u201d\u2013\u2014\u2026-]+/g, " ");
+    t = t.replace(/\s+/g, " ").trim();
+    return t;
+  }
+  function tokens(text) {
+    const n = normalize(text);
+    return n ? n.split(" ") : [];
+  }
+  function contentTokens(text) {
+    return tokens(text).filter((w) => !STOP_WORDS.has(w) && !/^\d+(\.\d+)?$/.test(w));
+  }
+
+  // ================= 比对（对齐 diffing.py） =================
+  function lev(a, b) {
+    const m = b.length;
+    let prev = Array.from({ length: m + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+      const cur = [i];
+      for (let j = 1; j <= m; j++) {
+        cur.push(Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] !== b[j - 1] ? 1 : 0)));
+      }
+      prev = cur;
+    }
+    return prev[m];
+  }
+  function wer(ref, usr) {
+    const rt = tokens(ref), ut = tokens(usr);
+    if (!rt.length) return ut.length ? 1.0 : 0.0;
+    return lev(rt, ut) / rt.length;
+  }
+  function cer(ref, usr) {
+    const r = normalize(ref), u = normalize(usr);
+    if (!r) return u ? 1.0 : 0.0;
+    return lev(r, u) / r.length;
+  }
+  function isMinor(refWord, usrWord) {
+    if (refWord !== null && refWord !== undefined && usrWord !== null && usrWord !== undefined) {
+      return MINOR_SETS.some((s) => s.has(refWord) && s.has(usrWord));
+    }
+    const w = refWord !== null && refWord !== undefined ? refWord : usrWord;
+    return MINOR_SETS.some((s) => s.has(w));
+  }
+  // LCS 回溯生成 opcodes（相邻 delete+insert 合并为 replace，与 difflib 近似）
+  function tokenDiff(refT, usrT) {
+    const n = refT.length, m = usrT.length;
+    const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        dp[i][j] = refT[i] === usrT[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    const raw = [];
+    let i = 0, j = 0;
+    while (i < n || j < m) {
+      if (i < n && j < m && refT[i] === usrT[j]) { raw.push({ op: "equal", t: refT[i] }); i++; j++; }
+      else if (i < n && (j >= m || dp[i + 1][j] >= dp[i][j + 1])) { raw.push({ op: "delete", t: refT[i] }); i++; }
+      else { raw.push({ op: "insert", t: usrT[j] }); j++; }
+    }
+    // 合并相邻 delete+insert 为 replace（对齐 difflib 的 opcodes）
+    const out = [];
+    let k = 0;
+    while (k < raw.length) {
+      if (raw[k].op === "delete" || raw[k].op === "insert") {
+        const del = [], ins = [];
+        while (k < raw.length && (raw[k].op === "delete" || raw[k].op === "insert")) {
+          if (raw[k].op === "delete") del.push(raw[k].t); else ins.push(raw[k].t);
+          k++;
+        }
+        const nPairs = Math.max(del.length, ins.length);
+        for (let x = 0; x < nPairs; x++) {
+          const rt = del[x] !== undefined ? del[x] : "";
+          const ut = ins[x] !== undefined ? ins[x] : "";
+          if (rt !== "" && ut !== "") out.push({ t: ut, ref: rt, op: "replace", minor: isMinor(rt, ut) });
+          else if (rt !== "") out.push({ t: rt, op: "delete", minor: isMinor(rt, null) });
+          else out.push({ t: ut, op: "insert", minor: isMinor(null, ut) });
+        }
+      } else { out.push({ t: raw[k].t, op: "equal", minor: false }); k++; }
+    }
+    return out;
+  }
+  function diffStats(diff) {
+    const errors = diff.filter((d) => d.op !== "equal");
+    return [errors.length, errors.filter((d) => d.minor).length];
+  }
+  function judgeDictation(reference, user, passWer) {
+    if (passWer === undefined || passWer === null) passWer = 0.12;
+    const w = wer(reference, user);
+    const c = cer(reference, user);
+    const diff = tokenDiff(tokens(reference), tokens(user));
+    const [nErr, nMinor] = diffStats(diff);
+    let passed = false, verdict = "fail";
+    if (w <= passWer) { passed = true; verdict = "pass"; }
+    else if (nErr > 0 && nMinor === nErr && w <= 0.35) { passed = true; verdict = "close_enough"; }
+    return {
+      wer: Math.round(w * 1000) / 1000,
+      cer: Math.round(c * 1000) / 1000,
+      diff, errors: nErr, minor_errors: nMinor,
+      passed, verdict,
+    };
+  }
+  function fuzzyMatch(reference, user) {
+    const r = normalize(reference), u = normalize(user);
+    if (!r || !u) {
+      return { score: 0, exact: false, fuzzy_ratio: 0.0, keyword_coverage: 0.0, content_words: 0 };
+    }
+    const exact = r === u;
+    const rt = tokens(reference), ut = tokens(user);
+    // SequenceMatcher ratio：2*M / (n+m)
+    const n = rt.length, m = ut.length;
+    const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        dp[i][j] = rt[i] === ut[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    const matches = dp[0][0];
+    const ratio = n + m ? (2 * matches) / (n + m) : 1;
+    const rc = contentTokens(reference), uc = new Set(contentTokens(user));
+    let cov = 0;
+    const rcSet = new Set(rc);
+    if (rcSet.size) {
+      cov = [...rcSet].filter((w) => uc.has(w)).length / rcSet.size;
+    }
+    const score = Math.round(Math.max(ratio, cov) * 100);
+    return {
+      score, exact,
+      fuzzy_ratio: Math.round(ratio * 1000) / 1000,
+      keyword_coverage: Math.round(cov * 1000) / 1000,
+      content_words: rc.length,
+    };
+  }
+  function judgeSpeaking(reference, user, passScore) {
+    if (passScore === undefined || passScore === null) passScore = 60;
+    const fm = fuzzyMatch(reference, user);
+    const passed = fm.score >= passScore || (fm.keyword_coverage >= 0.7 && fm.score >= 45);
+    const verdict = passed ? "pass" : (fm.score >= 40 ? "partial" : "fail");
+    return { ...fm, passed, verdict };
+  }
+  function judgeRecall(reference, variants, intentWords, user, passScore) {
+    if (passScore === undefined || passScore === null) passScore = 60;
+    const refs = [reference, ...(variants || [])];
+    let best = null;
+    for (const r of refs) {
+      const fm = fuzzyMatch(r, user);
+      if (!best || fm.score > best.score) best = fm;
+    }
+    let intentHits = 0;
+    if (intentWords && intentWords.length) {
+      const uc = new Set(contentTokens(user));
+      intentHits = intentWords.filter((w) => uc.has(w)).length;
+      best.score = Math.min(100, best.score + intentHits * 5);
+    }
+    const passed = best.score >= passScore;
+    return { ...best, passed, verdict: passed ? "pass" : "fail", intent_hits: intentHits };
+  }
+
+  // ================= IndexedDB 存储 =================
+  let _db = null;
+  const DB_NAME = "deepspeak-local", DB_VERSION = 1, STORE = "kv", STATE_KEY = "state_v1";
+  function openDB() {
+    return new Promise((resolve, reject) => {
+      if (_db) return resolve(_db);
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = () => { req.result.createObjectStore(STORE); };
+      req.onsuccess = () => { _db = req.result; resolve(_db); };
+      req.onerror = () => reject(req.error);
+    });
+  }
+  function idbGet(key) {
+    return openDB().then((db) => new Promise((resolve, reject) => {
+      const r = db.transaction(STORE).objectStore(STORE).get(key);
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+    }));
+  }
+  function idbSet(key, val) {
+    return openDB().then((db) => new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).put(val, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    }));
+  }
+
+  // ================= 状态 =================
+  let S = null;
+  let readyPromise = null;
+
+  function initialState() {
+    return {
+      materials: (BUILTIN_DATA.materials || []).map((m) => ({ ...m })),
+      units: {}, // mid → [unit]
+      expressions: BUILTIN_DATA.expressions || {}, // mid → uid → [{expression, meaning, intent, scene, variants}]
+      focus: BUILTIN_DATA.focus || {}, // mid → {status, listen_count, ...}
+      focus_review_history: [], // {material_id, result, interval_days, reviewed_at}
+      words: [], // {id, material_id, unit_id, expression, meaning, note, source, created_at}
+      mastery: {}, // uid → {listening, dictation, recall, speaking, overall, interval_days, stage, next_review_at, reviews_done}
+      review_history: [], // {unit_id, review_type, result, interval_days, reviewed_at}
+      answers: [], // {session_id, kind, user_input, reference, wer, cer, passed, created_at}
+      speaking_attempts: [], // {kind, unit_id, score, exact, verdict, passed, created_at}
+      focus_dictations: [], // {material_id, overall_wer, correct_words, total_words, sentence_count, detail_json, created_at}
+      checkins: [], // ["YYYY-MM-DD"]
+      settings: {}, // {key: value}
+      seq: { word: 0, session: 0 },
+    };
+  }
+
+  function initUnits() {
+    const out = {};
+    for (const [mid, units] of Object.entries(BUILTIN_DATA.units || {})) {
+      out[mid] = units.map((u) => ({ ...u, material_id: Number(mid), expressions: [] }));
+      for (const u of out[mid]) {
+        u.expressions = (BUILTIN_DATA.expressions[mid] || {})[u.id] || [];
+      }
+    }
+    return out;
+  }
+
+  function saveState() {
+    return idbSet(STATE_KEY, S);
+  }
+
+  function loadState() {
+    if (readyPromise) return readyPromise;
+    readyPromise = (async () => {
+      const saved = await idbGet(STATE_KEY);
+      if (saved) {
+        S = saved;
+        // 结构迁移：老数据可能缺字段
+        const fresh = initialState();
+        for (const k of Object.keys(fresh)) {
+          if (S[k] === undefined) S[k] = fresh[k];
+        }
+        if (!S.seq) S.seq = { word: 0, session: 0 };
+        // 迁移：补 material_id（旧导出数据没有该字段）
+        for (const [mid, units] of Object.entries(S.units)) {
+          for (const u of units) if (u.material_id === undefined) u.material_id = Number(mid);
+        }
+      } else {
+        S = initialState();
+        S.units = initUnits();
+        await saveState();
+      }
+    })().catch((e) => {
+      readyPromise = null;
+      throw e;
+    });
+    return readyPromise;
+  }
+
+  function save() { return idbSet(STATE_KEY, S); }
+
+  // 设置默认值（对齐 db.py DEFAULT_SETTINGS；PWA 无后端时也保证阈值/导航等有值）
+  const SETTING_DEFAULTS = {
+    asr_model: "base.en",
+    tts_voice_a: "Samantha", tts_voice_b: "Daniel", tts_rate: "175",
+    dictation_pass_wer: "0.12", speaking_pass_score: "60", recall_pass_score: "60",
+    ai_consent: "ask", ai_scope: "sentence", focus_free_nav: "0",
+  };
+  function allSettings() { return { ...SETTING_DEFAULTS, ...S.settings }; }
+
+  // ================= 工具 =================
+  function getSetting(key, def) {
+    const v = S.settings[key];
+    return v === undefined || v === null ? def : v;
+  }
+  function setSetting(key, val) { S.settings[key] = val; return save(); }
+  function nextWordId() { return ++S.seq.word; }
+  function nextSessionId() { return ++S.seq.session; }
+
+  function getUnit(uid) {
+    for (const units of Object.values(S.units)) {
+      const u = units.find((x) => x.id === uid);
+      if (u) return u;
+    }
+    return null;
+  }
+  function getUnits(mid) { return S.units[mid] || []; }
+  function getMaterial(mid) {
+    return S.materials.find((m) => m.id === mid) || null;
+  }
+  function getFocus(mid) {
+    return S.focus[mid] || {
+      material_id: mid, status: "new", listen_count: 0, dict_done: 0,
+      shadow_done: 0, offscript_done: 0, stage: 0, next_review_at: null, reviews_done: 0,
+    };
+  }
+  function ensureFocus(mid) {
+    if (!S.focus[mid]) {
+      S.focus[mid] = { status: "new", listen_count: 0, dict_done: 0, shadow_done: 0, offscript_done: 0, stage: 0, next_review_at: null, reviews_done: 0 };
+    }
+    return S.focus[mid];
+  }
+  function getMastery(uid) {
+    return S.mastery[uid] || {
+      unit_id: uid, listening: 0.0, dictation: 0.0, recall: 0.0, speaking: 0.0,
+      overall: 0.0, interval_days: 1.0, stage: 0, next_review_at: null, reviews_done: 0,
+    };
+  }
+  function ensureMastery(uid) {
+    if (!S.mastery[uid]) {
+      S.mastery[uid] = {
+        unit_id: uid, listening: 0.0, dictation: 0.0, recall: 0.0, speaking: 0.0,
+        overall: 0.0, interval_days: 1.0, stage: 0, next_review_at: null, reviews_done: 0,
+      };
+    }
+    return S.mastery[uid];
+  }
+  function unitStatus(uid) { const u = getUnit(uid); return u ? u.status : null; }
+  function setUnitStatus(uid, status) {
+    const u = getUnit(uid);
+    if (u) { u.status = status; }
+  }
+
+  // 场景标签（对齐 extract.scene_label 的常用集合）
+  const SCENE_LABELS = {
+    restaurant: ["餐厅", "🍽️"], doctor: ["看医生", "🏥"], news: ["新闻", "📰"],
+    small_talk: ["闲聊", "💬"], phone: ["打电话", "📞"], shopping: ["购物", "🛒"],
+    cooking: ["餐饮", "🍳"], home: ["居家", "🏠"], office: ["办公", "💼"],
+    groceries: ["买菜", "🥦"], other: ["其他", "📌"],
+  };
+  function sceneLabel(scene) {
+    const l = SCENE_LABELS[scene] || SCENE_LABELS.other;
+    return { label: l[0], emoji: l[1] };
+  }
+
+  // 内置材料：音频静态打包（frontend/assets/audio/）
+  function unitAudioUrl(mid, uid) {
+    const key = MATERIAL_KEYS[mid] || `m${mid}`;
+    return `assets/audio/builtin_${key}_${uid}.wav`;
+  }
+  function fullAudioUrl(mid) {
+    return `assets/audio/full_${mid}.wav`;
+  }
+
+  // ================= 单元 JSON（对齐 _unit_json / unit_progress） =================
+  function unitJson(uid) {
+    const u = getUnit(uid);
+    if (!u) return null;
+    const exprs = u.expressions || [];
+    return {
+      id: u.id, material_id: u.material_id, seq: u.seq, text: u.text,
+      status: u.status, scene: u.scene, difficulty: u.difficulty || 0,
+      learning_value: u.learning_value || 0, speaker: u.speaker || "",
+      start_ms: u.start_ms || 0, end_ms: u.end_ms || 0, is_flagged: u.is_flagged || 0,
+      mastery: getMastery(uid),
+      expressions: exprs.map((e) => ({
+        expression: e.expression, meaning: e.meaning || "", intent: e.intent || "",
+        label: e.meaning || "", variants: e.variants || [], source: e.source || "rule",
+      })),
+      explanation: "",
+      audio: { url: unitAudioUrl(u.material_id, uid), start_ms: 0, end_ms: 0, kind: "file" },
+    };
+  }
+
+  // ================= 材料 JSON（对齐 _material_json） =================
+  function materialJson(mid) {
+    const mat = getMaterial(mid);
+    if (!mat) return null;
+    const units = getUnits(mid);
+    const done = units.filter((u) => ["REVIEW_DUE", "MASTERED"].includes(u.status)).length;
+    const mastered = units.filter((u) => u.status === "MASTERED").length;
+    const { label, emoji } = sceneLabel(mat.scene || "");
+    const f = focusProgress(mid);
+    return {
+      ...mat,
+      scene_label: label, scene_emoji: emoji,
+      source: { type: "builtin", url: "", episodes: [], error: "", has_audio: true },
+      source_type: "builtin",
+      units: units.map((u) => ({
+        id: u.id, seq: u.seq, text: u.text, status: u.status, scene: u.scene,
+        difficulty: u.difficulty, learning_value: u.learning_value,
+        audio: { url: unitAudioUrl(mid, u.id), start_ms: 0, end_ms: 0, kind: "file" },
+      })),
+      unit_total: units.length, unit_done: done, unit_mastered: mastered,
+      unit_stats: { total: units.length, done, mastered },
+      focus: { ...f, audio_ready: true },
+    };
+  }
+
+  // ================= focus 状态机（对齐 focus.py） =================
+  function focusProgress(mid) {
+    const f = getFocus(mid);
+    const steps = {
+      listen: !!f.listen_count,
+      dictation: !!f.dict_done,
+      shadowing: !!f.shadow_done,
+      offscript: !!f.offscript_done,
+    };
+    const due = !!f.next_review_at && f.next_review_at <= nowStr();
+    return { ...f, steps, due };
+  }
+
+  function focusAct(mid, action) {
+    const f = ensureFocus(mid);
+    if (action === "back") {
+      if (!(f.status in FOCUS_BACK_TO)) {
+        return { ok: false, focus: { ...f }, err: `当前状态 ${f.status} 不能回退` };
+      }
+      f.status = FOCUS_BACK_TO[f.status];
+      return { ok: true, focus: { ...f }, err: null };
+    }
+    const rule = FOCUS_ACTS[action];
+    if (!rule) return { ok: false, focus: { ...f }, err: `未知动作: ${action}` };
+    const [allowed, target] = rule;
+    if (!allowed.includes(f.status)) {
+      return { ok: false, focus: { ...f }, err: `当前状态 ${f.status} 不允许 ${action}` };
+    }
+    if (action === "listen_again") f.listen_count += 1;
+    else if (action === "listen_done") f.listen_count = Math.max(f.listen_count, 1);
+    else if (action === "dict_done") f.dict_done = 1;
+    else if (action === "shadow_done") f.shadow_done = 1;
+    else if (action === "offscript_done") {
+      f.offscript_done = 1;
+      f.next_review_at = daysAfter(FOCUS_INTERVALS[0]);
+    }
+    f.status = target;
+    return { ok: true, focus: { ...f }, err: null };
+  }
+
+  function focusApplyReview(mid, passed) {
+    const f = ensureFocus(mid);
+    if (!["review_due", "mastered"].includes(f.status)) {
+      return { ok: false, focus: { ...f }, err: `当前状态 ${f.status} 不在复习队列` };
+    }
+    if (passed) {
+      f.stage = Math.min(f.stage + 1, FOCUS_INTERVALS.length - 1);
+      f.reviews_done += 1;
+      f.status = (f.status === "mastered" || f.reviews_done >= FOCUS_MASTER_MIN_REVIEWS) ? "mastered" : "review_due";
+      f.next_review_at = daysAfter(FOCUS_INTERVALS[f.stage]);
+    } else {
+      f.status = "offscript";
+      f.stage = Math.max(0, f.stage - 1);
+      f.next_review_at = null;
+    }
+    S.focus_review_history.push({
+      material_id: mid, result: passed ? "pass" : "fail",
+      interval_days: FOCUS_INTERVALS[Math.min(f.stage, FOCUS_INTERVALS.length - 1)],
+      reviewed_at: nowStr(),
+    });
+    return { ok: true, focus: { ...f }, err: null };
+  }
+
+  function focusDue() {
+    const out = [];
+    for (const [mid, f] of Object.entries(S.focus)) {
+      if (["review_due", "mastered"].includes(f.status) && f.next_review_at && f.next_review_at <= nowStr()) {
+        const mat = getMaterial(Number(mid));
+        const { label, emoji } = sceneLabel(mat ? mat.scene : "");
+        out.push({
+          material_id: Number(mid), title: mat ? mat.title : "",
+          scene_label: label, scene_emoji: emoji,
+          status: f.status, stage: f.stage, reviews_done: f.reviews_done,
+          next_review_at: f.next_review_at,
+        });
+      }
+    }
+    out.sort((a, b) => (a.next_review_at < b.next_review_at ? -1 : 1));
+    return out;
+  }
+
+  // ================= 单元状态机（对齐 review.py / server.py） =================
+  function overallFrom(skills) {
+    let overall = 0;
+    for (const k of Object.keys(SKILL_WEIGHTS)) overall += SKILL_WEIGHTS[k] * skills[k];
+    if (skills.recall < 0.6) overall = Math.min(overall, skills.recall + 0.25);
+    return Math.round(overall * 1000) / 1000;
+  }
+
+  function applySkill(scores, skill, result) {
+    const cur = scores[skill] || 0.0;
+    if (result === "pass") {
+      if (cur < 0.7) scores[skill] = 0.7;
+      else if (cur < 0.95) scores[skill] = Math.min(0.95, cur + 0.12);
+    } else if (result === "partial") {
+      scores[skill] = Math.max(0.45, cur * 0.8);
+    } else {
+      scores[skill] = cur <= 0.3 ? Math.min(cur, 0.3) : Math.round(cur * 0.45 * 1000) / 1000;
+    }
+  }
+
+  function recordSessionResult(unitId, sessionType, result, trainedSkills) {
+    const m = ensureMastery(unitId);
+    let skills = [];
+    const skill = TYPE_SKILL[sessionType];
+    if (trainedSkills && trainedSkills.length) skills = trainedSkills;
+    else if (skill) skills = [skill];
+    const scores = { ...m };
+    for (const s of skills) applySkill(scores, s, result);
+    const overall = overallFrom(scores);
+
+    let stage = m.stage, reviewsDone = m.reviews_done;
+    if (sessionType.startsWith("review")) {
+      if (result === "pass") { stage = Math.min(stage + 1, INTERVALS.length - 1); reviewsDone += 1; }
+      else if (result === "fail") { stage = Math.max(0, stage - 2); reviewsDone = Math.max(0, reviewsDone - 1); }
+      else if (result === "partial") { stage = Math.max(0, stage - 1); }
+    }
+    const interval = INTERVALS[Math.min(stage, INTERVALS.length - 1)];
+    Object.assign(m, {
+      listening: scores.listening, dictation: scores.dictation, recall: scores.recall,
+      speaking: scores.speaking, overall, interval_days: interval, stage,
+      reviews_done: reviewsDone, next_review_at: daysAfter(interval), updated_at: nowStr(),
+    });
+    S.review_history.push({
+      unit_id: unitId, review_type: sessionType, result, interval_days: interval, reviewed_at: nowStr(),
+    });
+    return { ...m };
+  }
+
+  function isMastered(m) {
+    return m.overall >= MASTER_MIN_OVERALL
+      && ["listening", "dictation", "recall", "speaking"].every((k) => m[k] >= MASTER_MIN_SKILL)
+      && m.reviews_done >= MASTER_MIN_REVIEWS;
+  }
+
+  function unitStatusAfterSession(unitId, sessionType, result) {
+    let status = unitStatus(unitId) || "NEW";
+    let regressed = false;
+    if (result === "fail" && ["review_dictation", "review_recall", "review_speaking"].includes(sessionType)) {
+      status = "ACTIVE_RECALL"; regressed = true;
+    } else if (result === "fail" && sessionType === "shadowing") {
+      status = "SHADOWING";
+    } else if (result === "fail" && sessionType === "active_recall") {
+      // 回忆失败：留在主动回忆可重试/跳过，不回退跟读（与后端 forced ACTIVE_RECALL 对齐）
+      status = "ACTIVE_RECALL"; regressed = false;
+    } else if (result === "fail" && sessionType === "dictation") {
+      status = "DICTATION";
+    }
+    return [status, regressed];
+  }
+
+  function unitTransition(unitId, to) {
+    const cur = unitStatus(unitId);
+    if (cur === null) return { ok: false, status: null, err: "单元不存在" };
+    if (!UNIT_TRANSITIONS[cur] || !UNIT_TRANSITIONS[cur][to]) {
+      return { ok: false, status: cur, err: `不允许的状态迁移: ${cur} → ${to}` };
+    }
+    setUnitStatus(unitId, to);
+    return { ok: true, status: to, err: null };
+  }
+
+  function unitAfterSession(unitId, sessionType, result, forcedStatus) {
+    recordSessionResult(unitId, sessionType, result);
+    if (forcedStatus) {
+      setUnitStatus(unitId, forcedStatus);
+    } else {
+      const [status] = unitStatusAfterSession(unitId, sessionType, result);
+      setUnitStatus(unitId, status);
+    }
+    return unitJson(unitId);
+  }
+
+  function unitDictation(unitId, userInput, opts) {
+    opts = opts || {};
+    const u = getUnit(unitId);
+    if (!u) throw new Error("单元不存在");
+    const sessionId = opts.session_id || 0;
+    const assessOnly = !!opts.assess_only;
+    if (!userInput) throw new Error("请输入听写内容");
+    userInput = String(userInput).replace(/\s+/g, " ").trim(); // 折叠换行/多余空白
+    if (!userInput) throw new Error("请输入听写内容");
+    const threshold = parseFloat(getSetting("dictation_pass_wer", "0.12"));
+    const result = judgeDictation(u.text, userInput, threshold);
+    S.answers.push({
+      session_id: sessionId, unit_id: unitId, kind: "dictation", user_input: userInput,
+      reference: u.text, wer: result.wer, cer: result.cer,
+      passed: result.passed ? 1 : 0, created_at: nowStr(),
+    });
+    let status = u.status;
+    if (assessOnly) {
+      return { ...result, status };
+    }
+    if (result.passed) {
+      unitAfterSession(unitId, "dictation", "pass", "REVEALED");
+      status = "REVEALED";
+    }
+    return { ...result, status };
+  }
+
+  function unitSpeaking(unitId, kind, text) {
+    const u = getUnit(unitId);
+    if (!u) throw new Error("单元不存在");
+    if (!text) throw new Error("没有内容（录音未识别或未输入）");
+    const sessionId = 0;
+    const variants = [];
+    for (const e of (u.expressions || [])) {
+      for (const v of (e.variants || [])) variants.push(v);
+    }
+    let result, sessionType, trained;
+    if (kind === "shadowing") {
+      const passScore = parseFloat(getSetting("speaking_pass_score", "60"));
+      result = judgeSpeaking(u.text, text, passScore);
+      sessionType = "shadowing"; trained = ["speaking"];
+    } else {
+      const passScore = parseFloat(getSetting("recall_pass_score", "60"));
+      result = judgeRecall(u.text, variants, [], text, passScore);
+      sessionType = "active_recall"; trained = ["recall"];
+    }
+    S.speaking_attempts.push({
+      kind, unit_id: unitId, score: result.score, exact: result.exact ? 1 : 0,
+      verdict: result.verdict, passed: result.passed ? 1 : 0, created_at: nowStr(),
+    });
+    unitAfterSession(unitId, sessionType, result.verdict, null);
+    return { ...result, evaluation: {}, status: unitStatus(unitId) };
+  }
+
+  function applyUnitReview(unitId, skills) {
+    const m = ensureMastery(unitId);
+    const scores = { ...m };
+    const passed = Object.values(skills).some((r) => r === "pass");
+    const failed = Object.values(skills).some((r) => r === "fail");
+    for (const [s, result] of Object.entries(skills)) {
+      if (s in SKILL_WEIGHTS) applySkill(scores, s, result);
+    }
+    let overall = overallFrom(scores);
+    if (failed && !passed) overall = Math.min(overall, 0.5);
+    else if (failed) overall = Math.min(overall, 0.7);
+
+    let stage = m.stage, reviewsDone = m.reviews_done;
+    if (passed && !failed) { stage = Math.min(stage + 1, INTERVALS.length - 1); reviewsDone += 1; }
+    else if (failed && passed) { stage = Math.max(0, stage - 1); }
+    else if (failed) { stage = Math.max(0, stage - 2); reviewsDone = Math.max(0, reviewsDone - 1); }
+
+    const interval = INTERVALS[Math.min(stage, INTERVALS.length - 1)];
+    Object.assign(m, {
+      listening: scores.listening, dictation: scores.dictation, recall: scores.recall,
+      speaking: scores.speaking, overall, interval_days: interval, stage,
+      reviews_done: reviewsDone, next_review_at: daysAfter(interval), updated_at: nowStr(),
+    });
+    const overallResult = passed && !failed ? "pass" : (failed && !passed ? "fail" : "partial");
+    S.review_history.push({
+      unit_id: unitId, review_type: "review", result: overallResult, interval_days: interval, reviewed_at: nowStr(),
+    });
+
+    let status;
+    if (isMastered(m)) status = "MASTERED";
+    else if (failed) status = "ACTIVE_RECALL";
+    else status = "REVIEW_DUE";
+    setUnitStatus(unitId, status);
+    return { status, mastery: { ...m }, unit: unitJson(unitId) };
+  }
+
+  function dueUnits(limit = 50) {
+    const now = nowStr();
+    const out = [];
+    for (const uid of Object.keys(S.mastery)) {
+      const m = S.mastery[uid];
+      const u = getUnit(Number(uid));
+      if (!u) continue;
+      if (!["REVIEW_DUE", "MASTERED", "UNDERSTOOD", "ACTIVE_RECALL", "SHADOWING", "DICTATION", "REVEALED"].includes(u.status)) continue;
+      if (!m.next_review_at || m.next_review_at > now) continue;
+      out.push({ ...u, mastery: { ...m } });
+    }
+    out.sort((a, b) => (a.mastery.next_review_at < b.mastery.next_review_at ? -1 : 1));
+    return out.slice(0, limit);
+  }
+
+  function todayCounts() {
+    const now = nowStr();
+    const due = dueUnits(100000);
+    const statusOk = ["REVIEW_DUE", "MASTERED", "UNDERSTOOD", "ACTIVE_RECALL", "SHADOWING", "REVEALED", "DICTATION"];
+    const reviewDue = due.filter((u) => statusOk.includes(u.status)).length;
+    let newCount = 0;
+    for (const units of Object.values(S.units)) newCount += units.filter((u) => u.status === "NEW").length;
+    const speakingDue = due.filter((u) => statusOk.includes(u.status) && u.mastery.recall < 0.7).length;
+    return { review_due: reviewDue, new_count: newCount, speaking_due: speakingDue };
+  }
+
+  function continueUnit() {
+    // 优先未完成材料中的下一个新单元
+    for (const mid of Object.keys(S.units).map(Number).sort((a, b) => a - b)) {
+      const units = getUnits(mid).sort((a, b) => a.seq - b.seq);
+      const nu = units.find((u) => u.status === "NEW");
+      if (nu) return nu;
+    }
+    const due = dueUnits(1);
+    if (due.length) return due[0];
+    for (const units of Object.values(S.units)) {
+      const u = units.find((x) => !["NEW", "MASTERED"].includes(x.status));
+      if (u) return u;
+    }
+    return null;
+  }
+
+  function weakScenes(limit = 3) {
+    const byScene = {};
+    for (const uid of Object.keys(S.mastery)) {
+      const u = getUnit(Number(uid));
+      if (!u || !u.scene || u.scene === "other" || u.status === "NEW") continue;
+      const m = S.mastery[uid];
+      if (!byScene[u.scene]) byScene[u.scene] = { sum: 0, n: 0, min: Infinity };
+      byScene[u.scene].sum += m.overall;
+      byScene[u.scene].n += 1;
+      byScene[u.scene].min = Math.min(byScene[u.scene].min, m.overall);
+    }
+    const rows = [];
+    for (const [scene, v] of Object.entries(byScene)) {
+      if (v.n < 2) continue;
+      rows.push({ scene, avg_overall: Math.round((v.sum / v.n) * 1000) / 1000, count: v.n, min_overall: v.min });
+    }
+    rows.sort((a, b) => a.avg_overall - b.avg_overall);
+    return rows.slice(0, limit).map((r) => {
+      const { label, emoji } = sceneLabel(r.scene);
+      return { ...r, scene_label: label, scene_emoji: emoji };
+    });
+  }
+
+  function continueFocus() {
+    let best = null;
+    for (const [mid, f] of Object.entries(S.focus)) {
+      if (!["new", "mastered"].includes(f.status)) {
+        best = { material_id: Number(mid), focus: f };
+      }
+    }
+    if (best) return focusCard(best.material_id);
+    for (const mat of S.materials) {
+      const f = S.focus[mat.id];
+      if (!f || f.status === "new") return focusCard(mat.id);
+    }
+    return null;
+  }
+  function focusCard(mid) {
+    const mat = getMaterial(mid);
+    const f = getFocus(mid);
+    const { label, emoji } = sceneLabel(mat ? mat.scene : "");
+    const steps = {
+      listen: !!f.listen_count,
+      dictation: !!f.dict_done,
+      shadowing: !!f.shadow_done,
+      offscript: !!f.offscript_done,
+    };
+    return {
+      material_id: mid, title: mat ? mat.title : "", scene: mat ? mat.scene : "",
+      scene_label: label, scene_emoji: emoji,
+      status: f.status, listen_count: f.listen_count,
+      stage: f.stage, reviews_done: f.reviews_done,
+      steps, next_review_at: f.next_review_at,
+    };
+  }
+
+  // ================= 统计（对齐 server.py /api/stats） =================
+  function computeStats() {
+    const today = todayStr();
+    const cnt = (arr, field) => arr.filter((r) => localDateKey(r[field]) === today).length;
+    const dict = cnt(S.answers, "created_at");
+    const dictUnitIds = new Set();
+    for (const a of S.answers) {
+      if (a.unit_id && localDateKey(a.created_at) === today) dictUnitIds.add(a.unit_id);
+    }
+    const speak = S.speaking_attempts.filter((r) => localDateKey(r.created_at) === today).length;
+    const recall = S.speaking_attempts.filter((r) => r.kind === "active_recall" && localDateKey(r.created_at) === today).length;
+    const unitReview = S.review_history.filter((r) => localDateKey(r.reviewed_at) === today).length;
+    const focus = S.focus_dictations.filter((r) => localDateKey(r.created_at) === today).length;
+    const checked = S.checkins.includes(today);
+    let streak = 0;
+    let d = new Date();
+    while (S.checkins.includes(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`)) {
+      streak += 1;
+      d.setDate(d.getDate() - 1);
+    }
+    // 近 7 天 / 近 30 天
+    const byDay = (arr, field) => {
+      const m = {};
+      for (const r of arr) {
+        const k = localDateKey(r[field]);
+        if (k) m[k] = (m[k] || 0) + 1;
+      }
+      return m;
+    };
+    const dDict = byDay(S.answers, "created_at");
+    const dSpeak = byDay(S.speaking_attempts, "created_at");
+    const dRev = byDay(S.review_history, "reviewed_at");
+    const dFocus = byDay(S.focus_dictations, "created_at");
+    const last7 = [], heat = [];
+    for (let i = 6; i >= 0; i--) {
+      const ds = daysAgo(i);
+      last7.push({ date: ds, dict: dDict[ds] || 0, speak: dSpeak[ds] || 0, review: dRev[ds] || 0, focus: dFocus[ds] || 0 });
+    }
+    for (let i = 29; i >= 0; i--) {
+      const ds = daysAgo(i);
+      heat.push({ date: ds, count: (dDict[ds] || 0) + (dSpeak[ds] || 0) + (dRev[ds] || 0) + (dFocus[ds] || 0) });
+    }
+    return {
+      today: { dict, dict_units: dictUnitIds.size, speak, recall, unit_review: unitReview, focus, checked, streak },
+      last7, heat,
+    };
+  }
+
+  function materialProgress(mid) {
+    const dicts = S.focus_dictations.filter((r) => r.material_id === mid).map((r) => ({
+      id: r.id || 0, overall_wer: r.overall_wer, correct_words: r.correct_words,
+      total_words: r.total_words, sentence_count: r.sentence_count, created_at: r.created_at,
+    }));
+    const revs = S.focus_review_history.filter((r) => r.material_id === mid).map((r) => ({
+      result: r.result, interval_days: r.interval_days, reviewed_at: r.reviewed_at,
+    }));
+    return { dictations: dicts, reviews: revs };
+  }
+
+  // ================= 词库（对齐 wordbank.py） =================
+  let _wordbank = null;
+  function loadWordbank() {
+    if (_wordbank) return Promise.resolve(_wordbank);
+    return fetch("assets/data/wordbank.json")
+      .then((r) => { if (!r.ok) throw new Error("wordbank 加载失败"); return r.json(); })
+      .then((data) => { _wordbank = data; return data; })
+      .catch(() => { _wordbank = {}; return _wordbank; });
+  }
+  function wordbankLookup(text) {
+    const q = String(text || "").trim().toLowerCase().replace(/^[.,!?;:'"()[\]\- ]+|[.,!?;:'"()[\]\- ]+$/g, "");
+    if (!q) return null;
+    const candidates = [q];
+    if (q.includes(" ")) candidates.push(q.split(" ")[0]);
+    for (const c of candidates) {
+      if (c in _wordbank) return [c, _wordbank[c]];
+    }
+    const m = q.match(/[a-z']+/g) || [];
+    for (const w of m) {
+      if (w in _wordbank) return [w, _wordbank[w]];
+    }
+    return null;
+  }
+
+  // ================= 路由分发 =================
+  async function api(method, path, body) {
+    await loadState();
+    const p = path.replace(/^\/api/, "");
+    const b = body || {};
+    let m;
+
+    // ---- 健康 ----
+    if (p === "/health" && method === "GET") {
+      // PWA：语音识别走浏览器 Web Speech API（支持则可用）；TTS 用浏览器 speechSynthesis
+      const webAsr = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+      return {
+        ok: true, version: "local", asr_available: webAsr,
+        asr_engine: webAsr ? "web" : null, asr_error: webAsr ? "" : "浏览器不支持 Web Speech API",
+        tts_available: "speechSynthesis" in window, tts_engine: "browser",
+        ai_provider: false, platform: "browser",
+      };
+    }
+    // ---- 点词释义（对齐后端 /api/explain；句子翻译在网页版无 LLM 不可用） ----
+    if (p === "/explain" && method === "POST") {
+      const text = String(b.text || "").trim();
+      if (!text) throw new Error("没有可查询的内容");
+      if (b.kind === "word") {
+        await loadWordbank();
+        const hit = wordbankLookup(text);
+        if (hit) {
+          const [word, entry] = hit;
+          const pos = Array.isArray(entry) ? entry[0] : (entry && entry.pos) || "";
+          const meaning = Array.isArray(entry) ? entry[1] : (entry && entry.meaning) || "";
+          return { ok: true, found: true, kind: "word", word, pos, meaning, example_en: "", example_zh: "", source: "wordbank" };
+        }
+        const word = (text.split(/\s+/)[0] || text).toLowerCase();
+        return { ok: true, found: false, kind: "word", word, pos: "", meaning: "" };
+      }
+      // sentence：网页版无 LLM，返回可读提示（explainer 会 toast）
+      throw new Error("句子翻译需要 AI Provider，请在桌面版配置（网页版可双击单词免费查词）");
+    }
+    // ---- 今日 ----
+    if (p === "/today" && method === "GET") {
+      const cont = continueUnit();
+      const counts = todayCounts();
+      let totalUnits = 0, masteredUnits = 0;
+      for (const units of Object.values(S.units)) {
+        totalUnits += units.length;
+        masteredUnits += units.filter((u) => u.status === "MASTERED").length;
+      }
+      return {
+        ok: true, ...counts,
+        continue_unit: cont ? { id: cont.id, text: cont.text, status: cont.status, material_id: cont.material_id, seq: cont.seq, scene: cont.scene } : null,
+        weak_scenes: weakScenes(),
+        total_units: totalUnits, mastered: masteredUnits,
+        focus_due: focusDue().length,
+        continue_focus: continueFocus(),
+      };
+    }
+    // ---- 设置 ----
+    if (p === "/settings" && method === "GET") return { ok: true, settings: allSettings() };
+    if (p === "/settings" && method === "PUT") {
+      for (const [k, v] of Object.entries(b)) setSetting(k, v);
+      await save();
+      return { ok: true };
+    }
+    // ---- 材料 ----
+    if (p === "/materials" && method === "GET") {
+      const out = S.materials.map((mat) => {
+        const units = getUnits(mat.id);
+        const done = units.filter((u) => ["REVIEW_DUE", "MASTERED"].includes(u.status)).length;
+        const mastered = units.filter((u) => u.status === "MASTERED").length;
+        const { label, emoji } = sceneLabel(mat.scene || "");
+        return {
+          ...mat, scene_label: label, scene_emoji: emoji,
+          source_type: "builtin",
+          unit_total: units.length, unit_done: done, unit_mastered: mastered,
+          focus_status: getFocus(mat.id).status,
+        };
+      });
+      return { ok: true, materials: out };
+    }
+    if (p === "/materials/upload" || p === "/materials/url") {
+      throw new Error("导入材料仅在桌面版可用（本模式为离线内置材料）");
+    }
+    m = p.match(/^\/materials\/(\d+)\/focus\/prepare$/);
+    if (m && method === "POST") return { ok: true, message: "离线模式音频已内置" };
+    m = p.match(/^\/materials\/(\d+)\/focus$/);
+    if (m && method === "GET") {
+      const mid = Number(m[1]);
+      const f = focusProgress(mid);
+      return { ok: true, focus: { ...f, audio_ready: true } };
+    }
+    if (m && method === "POST") {
+      const mid = Number(m[1]);
+      const r = focusAct(mid, b.action || "");
+      if (!r.ok) throw new Error(r.err);
+      await save();
+      return { ok: true, focus: r.focus, status: r.focus.status };
+    }
+    m = p.match(/^\/materials\/(\d+)\/focus\/dictation-result$/);
+    if (m && method === "POST") {
+      const mid = Number(m[1]);
+      const results = b.results || [];
+      let totalC = 0, totalW = 0;
+      for (const r of results) { totalC += r.correct || 0; totalW += r.total || 0; }
+      const wer = totalW ? Math.round((1 - totalC / totalW) * 1000) / 1000 : 0;
+      S.focus_dictations.push({
+        id: S.focus_dictations.length + 1, material_id: mid,
+        overall_wer: wer, correct_words: totalC, total_words: totalW,
+        sentence_count: results.length, detail_json: JSON.stringify(results),
+        created_at: nowStr(),
+      });
+      await save();
+      return { ok: true, wer, correct: totalC, total: totalW };
+    }
+    m = p.match(/^\/materials\/(\d+)\/focus\/expressions$/);
+    if (m && method === "POST") {
+      const mid = Number(m[1]);
+      let saved = 0;
+      for (const it of (b.items || [])) {
+        const expr = String(it.expression || "").trim();
+        if (!expr) continue;
+        if (S.words.some((w) => w.material_id === mid && w.expression.toLowerCase() === expr.toLowerCase())) continue;
+        S.words.push({
+          id: nextWordId(), material_id: mid, unit_id: it.unit_id || null,
+          expression: expr, meaning: String(it.meaning || "").trim(),
+          note: String(it.note || "").trim(), source: "user", created_at: nowStr(),
+        });
+        saved += 1;
+      }
+      await save();
+      return { ok: true, saved };
+    }
+    m = p.match(/^\/materials\/(\d+)\/words$/);
+    if (m && method === "GET") {
+      const mid = Number(m[1]);
+      const out = S.words.filter((w) => w.material_id === mid)
+        .sort((a, b) => b.id - a.id)
+        .map((w) => {
+          const u = w.unit_id ? getUnit(w.unit_id) : null;
+          return {
+            id: w.id, expression: w.expression, meaning: w.meaning, note: w.note,
+            source: w.source, unit_id: w.unit_id, created_at: w.created_at,
+            unit_text: u ? u.text : null,
+            audio: w.unit_id ? { url: unitAudioUrl(mid, w.unit_id), start_ms: 0, end_ms: 0, kind: "file" } : null,
+          };
+        });
+      return { ok: true, words: out };
+    }
+    m = p.match(/^\/materials\/(\d+)\/progress$/);
+    if (m && method === "GET") return { ok: true, ...materialProgress(Number(m[1])) };
+    m = p.match(/^\/materials\/(\d+)\/tags$/);
+    if (m && method === "POST") {
+      const mid = Number(m[1]);
+      const tags = String(b.tags || "").split(",").map((t) => t.trim().replace(/^#/, "")).filter(Boolean);
+      const mat = getMaterial(mid);
+      if (mat) { mat.tags = tags.join(","); await save(); }
+      return { ok: true, tags };
+    }
+    m = p.match(/^\/materials\/(\d+)\/podcast-episode$/);
+    if (m) throw new Error("播客导入仅在桌面版可用");
+    m = p.match(/^\/materials\/(\d+)$/);
+    if (m && method === "GET") {
+      const mat = materialJson(Number(m[1]));
+      if (!mat) throw new Error("材料不存在");
+      return { ok: true, material: mat };
+    }
+    // ---- 单元 ----
+    m = p.match(/^\/units\/(\d+)$/);
+    if (m && method === "GET") {
+      const u = unitJson(Number(m[1]));
+      if (!u) throw new Error("单元不存在");
+      return { ok: true, unit: u };
+    }
+    m = p.match(/^\/units\/(\d+)\/session$/);
+    if (m && method === "POST") {
+      const sid = nextSessionId();
+      await save();
+      return { ok: true, session_id: sid };
+    }
+    m = p.match(/^\/units\/(\d+)\/listening$/);
+    if (m && method === "POST") {
+      const uid = Number(m[1]);
+      unitAfterSession(uid, "blind_listening", "pass", "DICTATION");
+      await save();
+      return { ok: true, status: "DICTATION", unit: unitJson(uid) };
+    }
+    m = p.match(/^\/units\/(\d+)\/dictation$/);
+    if (m && method === "POST") {
+      const uid = Number(m[1]);
+      const result = unitDictation(uid, b.input || "", { session_id: b.session_id || 0, assess_only: !!b.assess_only });
+      await save();
+      return { ok: true, ...result };
+    }
+    m = p.match(/^\/units\/(\d+)\/reveal$/);
+    if (m && method === "POST") {
+      const uid = Number(m[1]);
+      const st = unitStatus(uid);
+      if (st && ["DICTATION", "SHADOWING", "ACTIVE_RECALL", "LISTENING"].includes(st)) {
+        unitTransition(uid, "REVEALED");
+      }
+      await save();
+      return { ok: true, status: "REVEALED", unit: unitJson(uid) };
+    }
+    m = p.match(/^\/units\/(\d+)\/ack$/);
+    if (m && method === "POST") {
+      const uid = Number(m[1]);
+      if (unitStatus(uid) === "REVEALED") unitTransition(uid, "UNDERSTOOD");
+      await save();
+      return { ok: true, status: "UNDERSTOOD", unit: unitJson(uid) };
+    }
+    m = p.match(/^\/units\/(\d+)\/advance$/);
+    if (m && method === "POST") {
+      const uid = Number(m[1]);
+      const r = unitTransition(uid, b.to || "");
+      if (!r.ok) throw new Error(r.err);
+      await save();
+      return { ok: true, status: r.status, unit: unitJson(uid) };
+    }
+    m = p.match(/^\/units\/(\d+)\/speaking$/);
+    if (m && method === "POST") {
+      const r = unitSpeaking(Number(m[1]), "shadowing", b.text || "");
+      await save();
+      return { ok: true, ...r };
+    }
+    m = p.match(/^\/units\/(\d+)\/recall$/);
+    if (m && method === "POST") {
+      const r = unitSpeaking(Number(m[1]), "active_recall", b.text || "");
+      await save();
+      return { ok: true, ...r };
+    }
+    m = p.match(/^\/units\/(\d+)\/(enhance|recall-hint|alternatives)$/);
+    if (m) throw new Error("AI 增强仅在配置了 API Key 的桌面版可用");
+    m = p.match(/^\/units\/(\d+)$/);
+    if (m && method === "PUT") {
+      const uid = Number(m[1]);
+      const u = getUnit(uid);
+      if (u && "flagged" in b) u.is_flagged = b.flagged ? 1 : 0;
+      await save();
+      return { ok: true, unit: unitJson(uid) };
+    }
+    // ---- 复习 ----
+    if (p === "/review/due" && method === "GET") {
+      const due = dueUnits().map((u) => ({
+        id: u.id, text: u.text, material_id: u.material_id, seq: u.seq,
+        scene: u.scene, status: u.status, mastery: u.mastery,
+      }));
+      return { ok: true, due };
+    }
+    m = p.match(/^\/review\/(\d+)\/complete$/);
+    if (m && method === "POST") {
+      const skills = b.skills || {};
+      if (!Object.keys(skills).length) throw new Error("缺少 skills（每项技能的结果）");
+      const r = applyUnitReview(Number(m[1]), skills);
+      await save();
+      return { ok: true, ...r };
+    }
+    // ---- focus 复习 ----
+    if (p === "/focus/due" && method === "GET") return { ok: true, due: focusDue() };
+    m = p.match(/^\/focus\/(\d+)\/review$/);
+    if (m && method === "POST") {
+      const r = focusApplyReview(Number(m[1]), !!b.passed);
+      if (!r.ok) throw new Error(r.err);
+      await save();
+      return { ok: true, focus: r.focus, status: r.focus.status };
+    }
+    // ---- 生词 ----
+    m = p.match(/^\/words\/(\d+)$/);
+    if (m && method === "DELETE") {
+      S.words = S.words.filter((w) => w.id !== Number(m[1]));
+      await save();
+      return { ok: true };
+    }
+    if (m && method === "PATCH") {
+      const w = S.words.find((x) => x.id === Number(m[1]));
+      if (w) {
+        if ("meaning" in b) w.meaning = String(b.meaning);
+        if ("note" in b) w.note = String(b.note);
+        await save();
+      }
+      return { ok: true };
+    }
+    // ---- 词库 ----
+    if (p.startsWith("/wordbank") && method === "GET") {
+      await loadWordbank();
+      const q = b.q !== undefined ? b.q : (new URLSearchParams(path.split("?")[1] || "")).get("q") || "";
+      const hit = wordbankLookup(q);
+      if (hit) return { ok: true, found: true, word: hit[0], pos: hit[1][0], meaning: hit[1][1] };
+      return { ok: true, found: false, word: q, pos: "", meaning: "" };
+    }
+    // ---- 打卡 / 统计 ----
+    if (p === "/checkin" && method === "POST") {
+      const t = todayStr();
+      if (!S.checkins.includes(t)) S.checkins.push(t);
+      let streak = 0;
+      const d = new Date();
+      while (S.checkins.includes(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`)) {
+        streak += 1;
+        d.setDate(d.getDate() - 1);
+      }
+      await save();
+      return { ok: true, checked: true, streak };
+    }
+    if (p === "/stats" && method === "GET") {
+      return { ok: true, ...computeStats() };
+    }
+    // ---- AI / 语音：离线模式不可用（返回空态，设置页可正常渲染） ----
+    if (p === "/ai/providers" && method === "GET") {
+      return { ok: true, providers: [], presets: [] };
+    }
+    if (p === "/ai/providers" && method === "POST") {
+      throw new Error("AI 功能仅在桌面版可用（配置 API Key 后启用）");
+    }
+    if (p === "/ai/privacy" && method === "GET") {
+      return { ok: true, consent: "never", scope: "sentence", granted: "" };
+    }
+    if (p === "/ai/consent" && method === "POST") {
+      return { ok: true };
+    }
+    if (p.startsWith("/ai/")) throw new Error("AI 功能仅在桌面版可用");
+    if (p.startsWith("/speech/")) throw new Error("语音识别仅在桌面版可用（可安装本地 faster-whisper）");
+    if (p === "/tts/voices") return { ok: true, voices: [] };
+    if (p === "/scenes") return { ok: true, scenes: [] };
+
+    throw new Error(`接口不存在: ${path}`);
+  }
+
+  // 一致性测试钩子（Node 环境 + DS_TEST=1 时暴露内部函数，浏览器无影响）
+  if (typeof process !== "undefined" && process.env && process.env.DS_TEST) {
+    globalThis.__DS_INTERNALS = {
+      normalize, tokens, contentTokens, wer, cer, tokenDiff, judgeDictation,
+      fuzzyMatch, judgeSpeaking, judgeRecall, isMinor, sceneLabel,
+    };
+  }
+
+  return { api, ready: loadState };
+})();
+
+// 浏览器全局挂载（const 不会自动成为 window 属性）
+if (typeof window !== "undefined") window.DeepSpeakEngine = DeepSpeakEngine;

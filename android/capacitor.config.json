@@ -1,0 +1,5 @@
+{
+  "appId": "com.deepspeak.app",
+  "appName": "DeepSpeak",
+  "webDir": "../frontend"
+}

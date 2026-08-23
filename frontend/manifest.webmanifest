@@ -1,0 +1,17 @@
+{
+  "name": "DeepSpeak — 英语深度学习",
+  "short_name": "DeepSpeak",
+  "description": "本地优先的英语深度学习：尚雯婕整段精听法（通听→听写→跟读→脱稿→回炉复习）。无需 API Key，数据只存本机浏览器。",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0e1116",
+  "theme_color": "#0e1116",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

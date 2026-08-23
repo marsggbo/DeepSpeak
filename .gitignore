@@ -1,0 +1,28 @@
+# 环境与依赖
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+electron/node_modules/
+
+# 本地数据（用户数据不推送到仓库）
+data/
+materials/
+models/
+*.db
+*.db-wal
+*.db-shm
+
+# 构建产物
+build/
+dist/
+packaging/build/
+packaging/dist/
+packaging/*.spec
+electron/release/
+docs/
+
+# 系统文件
+.DS_Store
+.zcode/
+*.log

@@ -1,0 +1,32 @@
+# DeepSpeak 打包配置（自用，不签名）
+appId: com.deepspeak.desktop
+productName: DeepSpeak
+directories:
+  output: release
+files:
+  - main.js
+  - package.json
+
+# 侧车（PyInstaller onedir）整体塞进 resources/deepspeak-server/
+extraResources:
+  - from: ../packaging/dist/deepspeak-server
+    to: deepspeak-server
+
+mac:
+  target:
+    - dmg
+  category: public.app-category.education
+  # 自用不签名：跳过 codesign
+  identity: null
+
+win:
+  target:
+    - nsis
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  # 安装包名字：DeepSpeak Setup
+  artifactName: "${productName} Setup ${version}.${ext}"
+
+# 环境变量兜底：electron-builder 也会读 CSC_IDENTITY_AUTO_DISCOVERY=false
