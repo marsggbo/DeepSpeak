@@ -15,9 +15,11 @@ ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 
 datas = [
     (os.path.join(ROOT, "frontend"), "frontend"),
-    (os.path.join(ROOT, "models"), "models"),
     (os.path.join(ROOT, "backend", "data"), "backend_data"),
 ]
+# models 目录（whisper/kokoro 模型缓存）体积大且不入库：本地打包时带上，CI 无此目录时跳过
+if os.path.isdir(os.path.join(ROOT, "models")):
+    datas.append((os.path.join(ROOT, "models"), "models"))
 binaries = []
 hiddenimports = []
 
