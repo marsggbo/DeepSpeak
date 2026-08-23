@@ -1,0 +1,247 @@
+# 英语最常用词表（用于难度估计与学习价值计算）
+# 每行一个词，小写。来源：Fry 1000 / Dolch 高频词整理。
+# 不在表中的词视为"生词/低频词"，参与难度评分。
+
+the of and a to in is you that it he was for on are as with his they at be this have from or one had by word but not what all were we when your can said there use an each which she do how their if will up other about out many then them these so some her would make like him into time has look two more write go see number no way could people my than first water been call who oil its now find long down day did get come made may part
+
+over new sound take only little work know place year live me back give most very after thing our just name good sentence man think say great where help through much before line right too mean old any same tell boy follow came want show also around form three small set put end does another well large must big even such because turn here why ask went men read need land different home us move try kind hand picture again change off play spell air away animal house point page letter mother answer found study still learn should America world
+
+high every near add food between own below country plant last school father keep tree never start city earth eye light thought head under story saw left don't few while along might close something seem next hard open example begin life always those both paper together got group often run important until children side feet car mile night walk white sea began grow took river four carry state once book hear stop without second late miss idea enough eat face watch far Indian really almost let above girl sometimes mountain cut young talk soon list song being leave family it's
+
+body music color stand sun questions fish area mark dog horse birds problem complete room knew since ever piece told usually didn't friends easy heard order red door sure become top ship across today during short better best however low hours black products happened whole measure remember early waves reached listen wind rock space covered fast several hold himself toward five step morning passed vowel true hundred against pattern numeral table north slowly money map farm pulled draw voice seen cold cried plan notice south sing war ground fall king town I'll unit figure certain field travel wood fire upon
+
+done English road half ten fly gave box finally wait correct oh quickly person became shown minutes strong verb stars front feel fact inches street decided contain course surface produce building ocean class note nothing rest carefully scientists inside wheels stay green known island week less machine base ago stood plane system behind ran round boat game force brought understand warm common bring explain dry though language shape deep thousands yes clear equation yet government filled heat full hot check object am rule among noun power cannot able six size dark ball material special heavy fine pair circle include built
+
+can't matter square syllables perhaps bill felt suddenly test direction center farmers ready anything divided general energy subject Europe moon region return believe dance members picked simple cells paint mind love cause rain exercise eggs train blue wish drop developed window difference distance heart site sum summer wall forest probably legs sat main winter wide written length reason kept interest arms brother race present beautiful store job edge past sign record finished discovered wild happy beside gone sky glass million west lay weather root instruments meet third months paragraph raised represent soft whether clothes flowers shall teacher held describe
+
+drive cross speak solve appear metal son either ice sleep village factors result jumped snow ride care floor hill pushed baby buy century outside everything tall already instead phrase soil bed copy free hope spring case laughed nation quite type themselves temperature bright lead everyone method section lake iron within dictionary hair ages amount scale pounds although per broken moment tiny possible gold milk sort calm stone act build middle speed count cat someone sail rolled bear wonder smiled angle fraction Africa practice sentence process died wait wash corn visit final shown cow west perhaps produce heard radio weekend weekly daily morning evening noon
+
+month year hour minute second today yesterday tomorrow week yesterday tomorrow clock early late soon later while during until before after since ago past future now always sometimes often usually never already still yet again once twice three times first last next other another same different few many much more most little less least some any all both either neither none several each every whole half quarter pair dozen couple single double triple
+
+hello goodbye please thanks thank welcome sorry excuse pardon yes no maybe perhaps certainly definitely absolutely probably possibly likely surely obviously actually basically especially particularly generally mainly mostly simply purely truly really quite fairly rather pretty extremely very highly deeply greatly widely commonly rarely seldom often frequently occasionally sometimes sometimes
+
+eat drink food water milk juice tea coffee bread rice meat fish chicken beef pork egg cheese butter oil salt sugar pepper sauce soup salad sandwich pizza pasta noodle dumpling cake cookie fruit apple banana orange grape berry lemon lime melon peach pear plum vegetable carrot potato tomato onion garlic ginger cabbage broccoli spinach cucumber
+
+go come walk run jump fly swim drive ride travel visit stay leave arrive return enter exit cross turn follow lead find lose search look see watch observe notice hear listen speak talk say tell ask answer reply respond call phone message text email write read book paper pen pencil word sentence paragraph story letter number
+
+buy sell pay cost price money cash card wallet store shop market mall counter cashier bag receipt change discount sale deal bargain refund exchange return borrow lend give take bring carry hold put place set keep save spend waste earn make build create work job office boss coworker friend family home house room kitchen bathroom bedroom living bed table chair sofa window door floor wall ceiling light lamp
+
+happy sad angry afraid tired hungry thirsty sleepy awake sick healthy strong weak old young new big small large little tall short long wide narrow thick thin heavy light fast slow quick early late hard easy simple difficult complex good bad nice kind gentle rough smooth soft warm cool hot cold wet dry clean dirty
+
+morning afternoon evening night day night sunrise sunset dawn dusk midnight noon
+
+please help need want like love hate enjoy prefer choose decide agree disagree believe think know understand realize wonder hope wish expect guess suppose doubt
+
+must should ought could would shall will may might can able
+
+if because although though while whereas since unless whether when where why how what which who whom whose that this these those
+
+about above across after against along among around at before behind below beneath beside between beyond by down during for from in inside into near of off on onto out outside over past through throughout to toward under underneath until up upon with within without
+
+at by for from in of off on out over to under up with
+
+a an the
+
+i you he she it we they me him her us them my your his its our their mine yours hers ours theirs myself yourself himself herself itself ourselves yourselves themselves
+
+who what when where why how which whose whom
+
+am is are was were be been being do does did done doing have has had having will would shall should can could may might must ought need dare
+
+not n't never no none nothing nobody nowhere neither nor
+
+one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty sixty seventy eighty ninety hundred thousand million billion
+
+first second third fourth fifth sixth seventh eighth ninth tenth last next previous
+
+good better best bad worse worst far farther farthest little less least much more most many more most
+
+man woman boy girl child baby kid adult person people men women children family father mother parent dad mom brother sister son daughter husband wife grandfather grandmother uncle aunt cousin nephew niece friend enemy neighbor stranger guest host
+
+head face eye ear nose mouth tooth teeth tongue lip hair neck shoulder arm hand finger thumb leg knee foot feet toe back chest stomach heart blood skin bone body
+
+red orange yellow green blue purple pink black white gray brown gold silver
+
+monday tuesday wednesday thursday friday saturday sunday january february march april may june july august september october november december spring summer autumn winter
+
+water air fire earth sun moon star sky cloud rain snow wind storm thunder lightning fog mist ice
+
+street road avenue highway lane block corner bridge tunnel park garden yard field farm forest hill mountain river lake ocean sea beach island coast desert
+
+school teacher student class lesson homework test exam grade subject math science english history geography art music sport game team player coach
+
+doctor nurse patient hospital clinic medicine drug pill symptom pain fever cough cold flu allergy injury wound bandage
+
+police fire station airport train bus subway taxi car truck bike bicycle walk
+
+kitchen cook food recipe meal breakfast lunch dinner snack dessert
+
+clothes shirt pants trousers jeans dress skirt coat jacket sweater shoe sock hat cap glove
+
+color size shape square circle triangle
+
+do make have take give get put go come see look find keep use work play run move think say tell ask
+
+back up down off on in out over under again
+
+also too as well either neither
+
+since until while during
+
+before after
+
+whenever wherever whatever whichever however whoever
+
+all any both each every either neither some no
+
+several few many much
+
+these those
+
+this that
+
+there here where
+
+above below under
+
+between among
+
+near beside next to
+
+across through
+
+into onto
+
+off away apart
+
+together
+
+always never sometimes often usually rarely
+
+even still yet just only
+
+then than so
+
+because since as
+
+although though even though
+
+if unless
+
+whether
+
+else otherwise
+
+another other others
+
+such
+
+own
+
+both
+
+may might
+
+etc.
+
+one's
+
+upon
+
+us
+
+our
+
+your
+
+their
+
+them
+
+she's
+
+he's
+
+it's
+
+we're
+
+they're
+
+i'm
+
+you're
+
+isn't
+
+aren't
+
+wasn't
+
+weren't
+
+don't
+
+doesn't
+
+didn't
+
+haven't
+
+hasn't
+
+hadn't
+
+can't
+
+couldn't
+
+wouldn't
+
+shouldn't
+
+won't
+
+let's
+
+that's
+
+there's
+
+here's
+
+what's
+
+who's
+
+i'll
+
+you'll
+
+we'll
+
+they'll
+
+he'll
+
+she'll
+
+i've
+
+you've
+
+we've
+
+they've
+
+i'd
+
+you'd
+
+he'd
+
+she'd
+
+we'd
+
+they'd

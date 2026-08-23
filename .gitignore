@@ -6,7 +6,7 @@ node_modules/
 electron/node_modules/
 
 # 本地数据（用户数据不推送到仓库）
-data/
+/data/
 materials/
 models/
 *.db
