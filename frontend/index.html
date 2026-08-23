@@ -9,6 +9,12 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="stylesheet" href="app.css">
+<script>
+  // 主题防闪烁：首帧前按 localStorage 应用白天/黑夜
+  try {
+    if (localStorage.getItem("ds_theme") === "light") document.documentElement.dataset.theme = "light";
+  } catch (e) { /* ignore */ }
+</script>
 </head>
 <body>
 <div id="app">
@@ -22,6 +28,7 @@
       <a href="#/settings" data-nav="settings" class="nav-item"><span class="nav-ico">⚙️</span><span class="nav-label">设置</span></a>
     </nav>
     <div class="sidebar-foot">本地优先 · 无需 API Key</div>
+    <button class="theme-toggle" data-theme-btn>☀️ 白天模式</button>
   </aside>
   <main id="view"><div class="loading">加载中…</div></main>
 </div>

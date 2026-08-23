@@ -14,6 +14,32 @@
   --yellow: #f5d76e;
   --radius: 14px;
   --shadow: 0 8px 30px rgba(0,0,0,.35);
+  --btn-hover: #2a3547;
+  --btn-hover-border: #3d4d68;
+  --tooltip-bg: #1d2330;
+  --tooltip-text: #e8eaf0;
+}
+
+/* 浅色（白天）主题：所有组件均走 CSS 变量，切主题无需改组件 */
+:root[data-theme="light"] {
+  --bg: #f4f6fa;
+  --bg2: #e9edf4;
+  --card: #ffffff;
+  --card2: #eef2f8;
+  --border: #d8dfeb;
+  --text: #1d2534;
+  --muted: #5b6a83;
+  --accent: #4a6cf7;
+  --accent2: #3d5fd9;
+  --green: #16a36a;
+  --red: #e05555;
+  --orange: #d98a1f;
+  --yellow: #b8912a;
+  --shadow: 0 8px 30px rgba(30, 50, 90, .12);
+  --btn-hover: #e4e9f2;
+  --btn-hover-border: #c9d3e3;
+  --tooltip-bg: #26304a;
+  --tooltip-text: #f0f4fb;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -91,7 +117,7 @@ main { flex: 1; padding: 26px 34px 60px; max-width: 1060px; margin: 0 auto; widt
   transition: background .15s, border-color .15s, opacity .15s;
   font-weight: 500;
 }
-.btn:hover { background: #2a3547; border-color: #3d4d68; }
+.btn:hover { background: var(--btn-hover); border-color: var(--btn-hover-border); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn.primary:hover { background: #7d99ff; }
@@ -449,26 +475,30 @@ kbd { background: var(--bg2); border: 1px solid var(--border); border-radius: 5p
 .explainer-close { position: absolute; top: 6px; right: 8px; background: none; border: none; color: var(--muted, #9aa3b2); cursor: pointer; font-size: 13px; line-height: 1; }
 
 /* ===== 逐句强化：大右箭头（跳下一句）+ Bingo 完成反馈 ===== */
-.next-unit-arrow {
-  position: fixed; right: 22px; top: 50%; transform: translateY(-50%);
+.unit-arrow {
+  position: fixed; top: 50%; transform: translateY(-50%);
   z-index: 900; display: flex; align-items: center; gap: 8px;
   text-decoration: none; cursor: pointer;
 }
-.next-unit-arrow .arrow-body {
+.unit-arrow.next { right: 22px; }
+.unit-arrow.prev { left: 22px; flex-direction: row-reverse; }
+.unit-arrow .arrow-body {
   width: 56px; height: 56px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   font-size: 24px; color: #fff; background: var(--accent, #6ec6ff);
   box-shadow: 0 6px 20px rgba(110, 198, 255, .45);
   transition: transform .15s ease, box-shadow .15s ease;
 }
-.next-unit-arrow:hover .arrow-body { transform: scale(1.12); box-shadow: 0 8px 26px rgba(110, 198, 255, .65); }
-.next-unit-arrow .arrow-tip {
-  position: absolute; right: 68px; white-space: nowrap;
-  background: #1d2330; color: #e8eaf0; font-size: 13px;
+.unit-arrow:hover .arrow-body { transform: scale(1.12); box-shadow: 0 8px 26px rgba(110, 198, 255, .65); }
+.unit-arrow .arrow-tip {
+  position: absolute; white-space: nowrap;
+  background: var(--tooltip-bg); color: var(--tooltip-text); font-size: 13px;
   padding: 6px 12px; border-radius: 8px; opacity: 0; pointer-events: none;
   transition: opacity .15s ease; box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
 }
-.next-unit-arrow:hover .arrow-tip { opacity: 1; }
+.unit-arrow.next .arrow-tip { right: 68px; }
+.unit-arrow.prev .arrow-tip { left: 68px; }
+.unit-arrow:hover .arrow-tip { opacity: 1; }
 
 .bingo-pop {
   position: fixed; inset: 0; z-index: 950; pointer-events: none;
@@ -486,3 +516,21 @@ kbd { background: var(--bg2); border: 1px solid var(--border); border-radius: 5p
 .bingo-pop.out { animation: bingoOut .42s ease-in forwards; }
 @keyframes bingoIn { from { transform: scale(.45); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 @keyframes bingoOut { to { transform: scale(1.35); opacity: 0; } }
+
+/* ===== 主题切换按钮（侧栏底部） ===== */
+.theme-toggle {
+  margin-top: 10px; width: 100%;
+  background: var(--card); border: 1px solid var(--border);
+  color: var(--text); font-size: 13px; padding: 8px 10px;
+  border-radius: 10px; cursor: pointer; transition: background .15s;
+}
+.theme-toggle:hover { background: var(--card2); }
+
+/* ===== AI 生成材料页 ===== */
+.gen-scenes { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.gen-chip { cursor: pointer; border: 1px solid var(--border); background: var(--card2); color: var(--text); padding: 8px 14px; border-radius: 99px; font-size: 14px; transition: all .15s; }
+.gen-chip:hover { border-color: var(--accent); }
+.gen-chip.active { background: rgba(108,140,255,.16); border-color: var(--accent); color: var(--accent2); font-weight: 600; }
+.gen-chip:disabled { opacity: .45; cursor: not-allowed; }
+.gen-seg { display: flex; gap: 6px; }
+.gen-seg .btn.sm { min-width: 64px; }

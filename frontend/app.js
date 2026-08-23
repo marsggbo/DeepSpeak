@@ -255,13 +255,14 @@ const routes = {
   "#/review": viewReview,
   "#/stats": viewStats,
   "#/settings": viewSettings,
+  "#/generate": viewGenerate,
 };
 
 async function router() {
   const hash = location.hash || "#/";
   stopPlay();
   // 切页清理：移除逐句强化的大箭头、停止精听音频轮询、销毁录音器
-  $(".next-unit-arrow")?.remove();
+  document.querySelectorAll(".unit-arrow").forEach(el => el.remove());
   if (focusCtx) focusCtx.pollStop = true;
   if (studioCtx && studioCtx.recorder) {
     try { studioCtx.recorder.destroy(); } catch (e) { /* ignore */ }
@@ -571,6 +572,7 @@ async function viewMaterials() {
     </div>
     <div class="import-bar">
       <button class="btn primary" id="btn-import">＋ 导入内容</button>
+      <a class="btn" href="#/generate">✨ AI 生成</a>
       <a class="btn" href="#/review">复习队列</a>
     </div>
     <div class="mat-filter">
@@ -1213,14 +1215,39 @@ function bingoFeedback() {
 }
 
 function renderUnitArrow() {
-  /* 大右箭头：随时跳到下一句（不放界面里，悬浮在右侧），hover 提示 */
-  $(".next-unit-arrow")?.remove();
-  if (!unitNav.next) return;
-  const a = document.createElement("a");
-  a.className = "next-unit-arrow";
-  a.href = "#/unit/" + unitNav.next.id;
-  a.innerHTML = `<span class="arrow-body">➤</span><span class="arrow-tip">跳过该句进入下一句</span>`;
-  document.body.appendChild(a);
+  /* 左右大箭头：随时跳到上一句/下一句（不放界面里，悬浮在两侧），hover 提示 */
+  document.querySelectorAll(".unit-arrow").forEach(el => el.remove());
+  if (unitNav.prev) {
+    const a = document.createElement("a");
+    a.className = "unit-arrow prev";
+    a.href = "#/unit/" + unitNav.prev.id;
+    a.innerHTML = `<span class="arrow-body">◀</span><span class="arrow-tip">回到上一句</span>`;
+    document.body.appendChild(a);
+  }
+  if (unitNav.next) {
+    const a = document.createElement("a");
+    a.className = "unit-arrow next";
+    a.href = "#/unit/" + unitNav.next.id;
+    a.innerHTML = `<span class="arrow-body">➤</span><span class="arrow-tip">跳过该句进入下一句</span>`;
+    document.body.appendChild(a);
+  }
+}
+
+/* ================= 主题（白天/黑夜） ================= */
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme === "light" ? "light" : "dark";
+  try { localStorage.setItem("ds_theme", theme); } catch (e) { /* ignore */ }
+  document.querySelectorAll("[data-theme-btn]").forEach(b => {
+    b.textContent = theme === "light" ? "🌙 夜间模式" : "☀️ 白天模式";
+  });
+}
+function currentTheme() {
+  try { return localStorage.getItem("ds_theme") === "light" ? "light" : "dark"; } catch (e) { return "dark"; }
+}
+function bindThemeButtons() {
+  document.querySelectorAll("[data-theme-btn]").forEach(b => {
+    b.addEventListener("click", () => applyTheme(currentTheme() === "light" ? "dark" : "light"));
+  });
 }
 
 function bindTextCorrection(panel, u) {
@@ -2127,7 +2154,8 @@ const PROCESS_STEP_LABELS = {
   preparing: "准备中",
   transcribing: "语音转写中",
   building: "生成训练单元",
-  synthesizing: "合成整段音频",
+  generating: "AI 生成对话中",
+  synthesizing: "语音合成中",
   done: "完成",
   error: "处理失败",
 };
@@ -2900,5 +2928,132 @@ async function viewSettings() {
   });
 }
 
+/* ================= AI 生成材料 ================= */
+const GEN_SCENES = [
+  ["restaurant", "🍽️ 餐厅"],
+  ["doctor", "🏥 看医生"],
+  ["airport", "✈️ 机场"],
+  ["hotel", "🏨 酒店"],
+  ["shopping", "🛒 购物"],
+  ["office", "💼 职场"],
+  ["small_talk", "☕ 日常闲聊"],
+  ["travel", "🗺️ 旅行"],
+  ["phone", "📞 打电话"],
+  ["interview", "🎤 面试"],
+];
+
+async function viewGenerate() {
+  const v = $("#view");
+  let aiOk = false;
+  try { const h = await getHealth(); aiOk = !!h.ai_provider; } catch (e) { /* ignore */ }
+  v.innerHTML = `
+    <div class="page-head">
+      <div>
+        <a href="#/materials" style="font-size:13px">← 材料</a>
+        <div class="page-title">✨ AI 生成材料</div>
+        <div class="page-sub">AI 按场景写对话 → 本机 TTS 合成真人声音 → 自动变成可训练的材料</div>
+      </div>
+    </div>
+    ${aiOk ? "" : `<div class="panel" style="border-left-color:var(--orange)"><b>⚠️ 尚未配置 AI Provider</b><div class="hint" style="margin-top:4px">生成需要调用大模型。请先到 <a href="#/settings">设置 → AI Provider</a> 配置一个（Ollama / OpenAI 兼容 / Anthropic / Gemini 均可）。</div></div>`}
+    <div class="panel">
+      <div class="panel-title">1️⃣ 选择场景</div>
+      <div class="gen-scenes" id="gen-scenes">
+        ${GEN_SCENES.map(([k, label], i) => `<button class="chip gen-chip ${i === 0 ? "active" : ""}" data-scene="${k}">${label}</button>`).join("")}
+      </div>
+      <div class="label" style="font-size:12px;color:var(--muted);margin-top:12px">或自定义场景</div>
+      <input class="input" id="gen-custom" placeholder="例如：两位同事在茶水间聊周末爬山计划…" style="margin-top:6px">
+    </div>
+    <div class="panel">
+      <div class="panel-title">2️⃣ 调整参数（都有默认值，不想调可以直接生成）</div>
+      <div class="setting-row">
+        <div><div class="label">难度</div><div class="desc">影响词汇与句长</div></div>
+        <div class="gen-seg" id="gen-diff">
+          ${[["easy", "简单"], ["medium", "适中"], ["hard", "进阶"]].map(([k, label]) => `<button class="btn sm ${k === "medium" ? "primary" : ""}" data-diff="${k}">${label}</button>`).join("")}
+        </div>
+      </div>
+      <div class="setting-row">
+        <div><div class="label">对话轮数 <span id="gen-turns-v" style="color:var(--accent2)">6 句</span></div></div>
+        <input type="range" id="gen-turns" min="2" max="12" step="2" value="6" style="flex:1;accent-color:var(--accent)">
+      </div>
+      <div class="setting-row">
+        <div><div class="label">目标时长 <span id="gen-len-v" style="color:var(--accent2)">90 秒</span></div></div>
+        <input type="range" id="gen-len" min="30" max="300" step="30" value="90" style="flex:1;accent-color:var(--accent)">
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:14px;cursor:pointer">
+        <input type="checkbox" id="gen-random" style="accent-color:var(--accent)"> 🎲 随机生成（随机挑一个场景和参数，生成的音频就是今天的学习内容）
+      </label>
+    </div>
+    <div class="btn-row" style="margin-top:16px">
+      <button class="btn primary big" id="gen-run">✨ 生成并合成语音</button>
+    </div>
+    <div id="gen-progress" style="margin-top:14px"></div>
+  `;
+  let scene = "restaurant", diff = "medium", custom = "", random = false;
+  const chips = $$("#gen-scenes .gen-chip");
+  chips.forEach(c => c.addEventListener("click", () => {
+    chips.forEach(x => x.classList.remove("active"));
+    c.classList.add("active");
+    scene = c.dataset.scene;
+  }));
+  $$("#gen-diff button").forEach(b => b.addEventListener("click", () => {
+    $$("#gen-diff button").forEach(x => x.classList.remove("primary"));
+    b.classList.add("primary");
+    diff = b.dataset.diff;
+  }));
+  const turnsEl = $("#gen-turns"), lenEl = $("#gen-len");
+  turnsEl.addEventListener("input", () => { $("#gen-turns-v").textContent = turnsEl.value + " 句"; });
+  lenEl.addEventListener("input", () => { $("#gen-len-v").textContent = lenEl.value + " 秒"; });
+  $("#gen-custom").addEventListener("input", (e) => { custom = e.target.value.trim(); });
+  $("#gen-random").addEventListener("change", (e) => {
+    random = e.target.checked;
+    chips.forEach(c => c.disabled = random);
+    if (random) { $("#gen-custom").disabled = true; } else { $("#gen-custom").disabled = false; }
+  });
+
+  $("#gen-run").addEventListener("click", async () => {
+    const btn = $("#gen-run");
+    btn.disabled = true;
+    btn.textContent = "⏳ 生成中…（LLM 写对话 + 本机合成语音，约 1 分钟）";
+    const box = $("#gen-progress");
+    box.innerHTML = `<div class="progress-bar" style="cursor:default"><div class="progress-fill" style="width:4%"></div></div>`;
+    try {
+      const r = await api("/api/materials/generate", {
+        method: "POST",
+        body: { scene, custom_prompt: custom, turns: turnsEl.value, difficulty: diff, length_seconds: lenEl.value, random },
+      });
+      const mid = r.id;
+      for (let i = 0; i < 300; i++) {
+        await new Promise(r2 => setTimeout(r2, 1000));
+        let material;
+        try { material = (await api(`/api/materials/${mid}`)).material; } catch (e) { continue; }
+        if (material.status === "ready") {
+          toast(`AI 材料已生成：${material.unit_total} 句，开始学习吧！`, "success");
+          location.hash = "#/material/" + mid;
+          return;
+        }
+        if (material.status === "error") {
+          toast(material.description || "生成失败", "error");
+          location.hash = "#/material/" + mid;
+          return;
+        }
+        const step = PROCESS_STEP_LABELS[material.process_step] || "生成中";
+        const pct = material.process_pct || 0;
+        box.innerHTML = `
+          <div class="label" style="font-size:13px;color:var(--muted);margin-bottom:6px">正在${step}… ${pct}%</div>
+          <div class="progress-bar" style="cursor:default"><div class="progress-fill" style="width:${Math.max(2, pct)}%"></div></div>`;
+      }
+      toast("生成仍在进行，稍后到材料列表查看", "");
+      location.hash = "#/materials";
+    } catch (e) {
+      box.innerHTML = "";
+      toast(e.message, "error");
+      btn.disabled = false;
+      btn.textContent = "✨ 生成并合成语音";
+    }
+  });
+}
+
 /* ================= 启动 ================= */
+applyTheme(currentTheme()); // 同步主题按钮文案（首帧由 index.html 内联脚本应用）
+bindThemeButtons();
 router();

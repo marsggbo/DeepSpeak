@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import ai as ai_mod
 from . import asr as asr_mod
-from . import builtin, db, diffing, extract, focus, importers, paths, pipeline, review, textproc, tts, wordbank
+from . import builtin, db, diffing, extract, focus, generate, importers, paths, pipeline, review, textproc, tts, wordbank
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_DIR = paths.frontend_dir()
@@ -672,6 +672,18 @@ def api_router(handler):
         threading.Thread(target=pipeline._asr_and_build, args=(mid,), daemon=True).start()
         return _ok(handler, {"ok": True, "message": "已重新提交，正在转写"})
 
+    # ---------- AI 生成材料 ----------
+    if path == "/api/materials/generate" and method == "POST":
+        body = _body_json(handler)
+        # 先建一条 processing 材料占位（LLM 失败时置 error），再后台生成
+        mid = db.execute(
+            """INSERT INTO materials(title, description, media_type, language, status)
+               VALUES(?,?,?,?, 'processing')""",
+            ("AI 生成中…", "AI 生成材料", "audio", "en"),
+        )
+        threading.Thread(target=_generate_worker, args=(mid, body), daemon=True).start()
+        return _ok(handler, {"id": mid, "message": "AI 材料已开始生成，正在合成语音"})
+
     m = re.match(r"^/api/materials/(\d+)/transcript$", path)
     if m and method == "POST":
         body = _body_json(handler)
@@ -1133,6 +1145,15 @@ def _recall_scene_prompt(u):
     return f"scene: {u['scene']}"
 
 
+def _generate_worker(mid, params):
+    """AI 生成材料后台任务：LLM 生成对话 → TTS 合成 → 建单元。失败时占位材料置 error。"""
+    try:
+        generate.generate_material(params, mid=mid)
+    except Exception as e:
+        db.execute("UPDATE materials SET status='error', description=? WHERE id=?", (f"生成失败：{e}", mid))
+        db.execute("UPDATE materials SET process_step='error', process_pct=0 WHERE id=?", (mid,))
+
+
 def _attach_and_build(mid, text, language="en"):
     """给已有素材补字幕/文本后重新建单元。"""
     try:
@@ -1209,6 +1230,9 @@ def _serve_file(handler, path, download_name=None, allow_range=True):
     handler.send_header("Content-Type", ctype)
     handler.send_header("Content-Length", str(length))
     handler.send_header("Accept-Ranges", "bytes")
+    # 应用壳资源每次校验（dev 迭代频繁；PWA 侧由 service worker 缓存，不受影响）
+    if ext in (".html", ".js", ".css", ".json"):
+        handler.send_header("Cache-Control", "no-cache")
     if status == 206:
         handler.send_header("Content-Range", f"bytes {start}-{end}/{size}")
     if download_name:
