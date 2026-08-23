@@ -832,6 +832,14 @@ def api_router(handler):
                 db.execute("UPDATE training_units SET scene=? WHERE id=?", (scene, unit_id))
         if "flagged" in body:
             db.execute("UPDATE training_units SET is_flagged=? WHERE id=?", (int(body["flagged"]), unit_id))
+        if "text" in body:
+            # 用户纠错：ASR 转录可能有误，允许用户修正句子文本（听写/对照/复习都以它为准）
+            t = (body["text"] or "").strip()
+            if not t:
+                return _err(handler, "句子文本不能为空")
+            if len(t) > 2000:
+                return _err(handler, "句子文本过长")
+            db.execute("UPDATE training_units SET text=? WHERE id=?", (t, unit_id))
         return _ok(handler, {"unit": _unit_json(unit_id)})
 
     # ---------- 会话 ----------

@@ -260,7 +260,8 @@ const routes = {
 async function router() {
   const hash = location.hash || "#/";
   stopPlay();
-  // 切页清理：停止精听音频轮询、销毁录音器
+  // 切页清理：移除逐句强化的大箭头、停止精听音频轮询、销毁录音器
+  $(".next-unit-arrow")?.remove();
   if (focusCtx) focusCtx.pollStop = true;
   if (studioCtx && studioCtx.recorder) {
     try { studioCtx.recorder.destroy(); } catch (e) { /* ignore */ }
@@ -301,18 +302,61 @@ async function updateReviewBadge() {
 
 let _lastHash = location.hash || "#/";
 const LEARNING_HASH = /^#\/(unit\/\d+|focus\/\d+)/;
+// 退出提醒：默认每次提醒；用户勾选「今后不再提醒」后写 settings.exit_confirm=0
+let _exitConfirmEnabled = true;
+let _skipExitConfirm = false;
+let _pendingExit = null;
+(async () => {
+  try {
+    const { settings } = await api("/api/settings");
+    _exitConfirmEnabled = settings.exit_confirm !== "0";
+  } catch (e) { /* 默认提醒 */ }
+})();
+
 window.addEventListener("hashchange", () => {
   const next = location.hash || "#/";
-  // 退出学习确认：从逐句强化/整段精听离开到其他页面时提示（进度已自动保存）
-  if (LEARNING_HASH.test(_lastHash) && !LEARNING_HASH.test(next)) {
-    if (!confirm("退出当前学习？已完成的步骤会自动保存，可随时从「今日」页继续。")) {
-      location.hash = _lastHash;
+  const leavingLearning = LEARNING_HASH.test(_lastHash) && !LEARNING_HASH.test(next);
+  if (leavingLearning && !_skipExitConfirm && _exitConfirmEnabled) {
+    // 只有停在中间步骤（句子未完成）才提醒；已到完成页直接放行
+    const inMiddleStep = studioCtx && studioCtx.currentStep && !["done", "r_done"].includes(studioCtx.currentStep);
+    const leavingFocus = /^#\/focus\/\d+/.test(_lastHash);
+    if (inMiddleStep || leavingFocus) {
+      _pendingExit = next;
+      location.hash = _lastHash; // 先退回原页面，弹自定义确认（原生 confirm 无法带选项）
+      askExitConfirm();
       return;
     }
   }
+  _skipExitConfirm = false;
   _lastHash = next;
   router();
 });
+
+function askExitConfirm() {
+  modal(`
+    <h3>退出当前学习？</h3>
+    <p style="color:var(--muted);font-size:14px;margin:10px 0">已完成的步骤会自动保存，可随时从「今日」页继续。</p>
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer">
+      <input type="checkbox" id="exit-norepeat" style="accent-color:var(--accent)"> 今后不再提醒（切出时自动保存进度）
+    </label>
+    <div class="btn-row" style="margin-top:16px">
+      <button class="btn primary" id="exit-yes">退出</button>
+      <button class="btn" id="exit-no">继续学习</button>
+    </div>`);
+  $("#exit-yes").addEventListener("click", async () => {
+    if ($("#exit-norepeat").checked) {
+      try {
+        await api("/api/settings", { method: "PUT", body: { exit_confirm: "0" } });
+        _exitConfirmEnabled = false;
+        toast("已记住：以后切出学习不再提醒", "success");
+      } catch (e) { /* ignore */ }
+    }
+    closeModal();
+    _skipExitConfirm = true;
+    location.hash = _pendingExit;
+  });
+  $("#exit-no").addEventListener("click", () => { closeModal(); _pendingExit = null; });
+}
 
 /* ================= 今日 ================= */
 async function viewToday() {
@@ -1156,8 +1200,62 @@ function updateStepBar(key) {
   });
 }
 
+function bingoFeedback() {
+  /* 每句完成时的庆祝提示：大字 Bingo 弹出后自动淡出 */
+  const el = document.createElement("div");
+  el.className = "bingo-pop";
+  el.innerHTML = `<div class="bingo-word">Bingo!</div><div class="bingo-sub">🎉 本句完成</div>`;
+  document.body.appendChild(el);
+  setTimeout(() => {
+    el.classList.add("out");
+    setTimeout(() => el.remove(), 450);
+  }, 1500);
+}
+
+function renderUnitArrow() {
+  /* 大右箭头：随时跳到下一句（不放界面里，悬浮在右侧），hover 提示 */
+  $(".next-unit-arrow")?.remove();
+  if (!unitNav.next) return;
+  const a = document.createElement("a");
+  a.className = "next-unit-arrow";
+  a.href = "#/unit/" + unitNav.next.id;
+  a.innerHTML = `<span class="arrow-body">➤</span><span class="arrow-tip">跳过该句进入下一句</span>`;
+  document.body.appendChild(a);
+}
+
+function bindTextCorrection(panel, u) {
+  /* 听写检查的原文来自 ASR 转录，可能有错：允许用户就地纠正并保存 */
+  const btn = $("#edit-text", panel);
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const ref = $(".reference-text", panel);
+    if (!ref) return;
+    ref.innerHTML = `
+      <textarea class="input" id="text-fix" style="min-height:72px">${esc(u.text)}</textarea>
+      <div class="btn-row" style="margin-top:10px">
+        <button class="btn sm primary" id="text-fix-save">💾 保存纠错</button>
+        <button class="btn sm" id="text-fix-cancel">取消</button>
+      </div>`;
+    $("#text-fix").focus();
+    $("#text-fix-save").addEventListener("click", async () => {
+      const t = $("#text-fix").value.trim();
+      if (!t) return toast("内容不能为空", "error");
+      const saveBtn = $("#text-fix-save");
+      saveBtn.disabled = true;
+      try {
+        const r = await api(`/api/units/${u.id}`, { method: "PUT", body: { text: t } });
+        studioCtx.unit = r.unit;
+        await showStep(studioCtx.currentStep);
+        toast("已保存，后续听写与复习将以新文本为准", "success");
+      } catch (e) { toast(e.message, "error"); saveBtn.disabled = false; }
+    });
+    $("#text-fix-cancel").addEventListener("click", () => showStep(studioCtx.currentStep));
+  });
+}
+
 async function renderStudio(u, opts) {
-  studioCtx = { unit: u, sessionId: null, dictAttempts: 0, lastDict: null, recorder: null, review: !!opts.review };
+  studioCtx = { unit: u, sessionId: null, dictAttempts: 0, lastDict: null, recorder: null, review: !!opts.review, currentStep: null };
+  renderUnitArrow();
   const studio = $("#studio");
   const steps = studioCtx.review ? REVIEW_STEPS : STEP_DEFS;
   let stepIdx;
@@ -1178,6 +1276,7 @@ async function renderStudio(u, opts) {
 }
 
 async function showStep(key) {
+  if (studioCtx) studioCtx.currentStep = key;
   updateStepBar(key);
   const u = studioCtx.unit;
   const panel = $("#step-panel");
@@ -1262,8 +1361,10 @@ async function showStep(key) {
       <div class="reference-text">${esc(u.text)}</div>
       ${studioCtx.lastDict ? renderDiffMini(studioCtx.lastDict) : ""}
       <div id="unit-words"></div>
+      <div class="btn-row" style="margin-top:8px"><button class="btn sm" id="edit-text">✏️ 原文有误？纠正</button></div>
       <div class="btn-row"><button class="btn primary" id="r-next">记住了，口语复述 →</button></div>`;
     renderUnitWords(u);
+    bindTextCorrection(panel, u);
     $("#r-next").addEventListener("click", () => showStep("r_speak"));
 
   } else if (key === "r_speak") {
@@ -1387,11 +1488,13 @@ async function showStep(key) {
       <div class="reference-text">${esc(u.text)}</div>
       ${studioCtx.lastDict ? renderDiffMini(studioCtx.lastDict) : ""}
       <div id="unit-words"></div>
+      <div class="btn-row" style="margin-top:8px"><button class="btn sm" id="edit-text">✏️ 原文有误？纠正</button></div>
       <div class="btn-row">
         <button class="btn primary" id="ack">明白了，进入跟读 →</button>
       </div>`;
     renderExpressionsPanel(u);
     renderUnitWords(u);
+    bindTextCorrection(panel, u);
     $("#ack").addEventListener("click", async () => {
       const cur = (await api(`/api/units/${u.id}`)).unit;
       if (cur.status === "REVEALED") await api(`/api/units/${u.id}/ack`, { method: "POST" });
@@ -1548,6 +1651,7 @@ async function showStep(key) {
     });
 
   } else if (key === "done") {
+    bingoFeedback();
     const m = u.mastery;
     panel.innerHTML = `
       <div class="panel-title">🎉 完成！</div>
@@ -1618,6 +1722,7 @@ async function finishReview() {
 }
 
 function renderReviewDone() {
+  bingoFeedback();
   const u = studioCtx.unit;
   const m = u.mastery;
   const r = studioCtx.reviewResult || {};

@@ -447,3 +447,42 @@ kbd { background: var(--bg2); border: 1px solid var(--border); border-radius: 5p
 .explainer-sub { color: var(--muted, #9aa3b2); }
 .explainer-src { font-size: 12px; color: var(--accent, #6ec6ff); margin-bottom: 4px; }
 .explainer-close { position: absolute; top: 6px; right: 8px; background: none; border: none; color: var(--muted, #9aa3b2); cursor: pointer; font-size: 13px; line-height: 1; }
+
+/* ===== 逐句强化：大右箭头（跳下一句）+ Bingo 完成反馈 ===== */
+.next-unit-arrow {
+  position: fixed; right: 22px; top: 50%; transform: translateY(-50%);
+  z-index: 900; display: flex; align-items: center; gap: 8px;
+  text-decoration: none; cursor: pointer;
+}
+.next-unit-arrow .arrow-body {
+  width: 56px; height: 56px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; color: #fff; background: var(--accent, #6ec6ff);
+  box-shadow: 0 6px 20px rgba(110, 198, 255, .45);
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.next-unit-arrow:hover .arrow-body { transform: scale(1.12); box-shadow: 0 8px 26px rgba(110, 198, 255, .65); }
+.next-unit-arrow .arrow-tip {
+  position: absolute; right: 68px; white-space: nowrap;
+  background: #1d2330; color: #e8eaf0; font-size: 13px;
+  padding: 6px 12px; border-radius: 8px; opacity: 0; pointer-events: none;
+  transition: opacity .15s ease; box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+}
+.next-unit-arrow:hover .arrow-tip { opacity: 1; }
+
+.bingo-pop {
+  position: fixed; inset: 0; z-index: 950; pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: rgba(10, 13, 20, .35);
+  animation: bingoIn .28s ease-out;
+}
+.bingo-pop .bingo-word {
+  font-size: 72px; font-weight: 800; letter-spacing: 2px;
+  background: linear-gradient(135deg, #ffd166, #ff6b6b);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  filter: drop-shadow(0 6px 22px rgba(255, 209, 102, .45));
+}
+.bingo-pop .bingo-sub { font-size: 18px; color: #e8eaf0; margin-top: 10px; }
+.bingo-pop.out { animation: bingoOut .42s ease-in forwards; }
+@keyframes bingoIn { from { transform: scale(.45); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+@keyframes bingoOut { to { transform: scale(1.35); opacity: 0; } }

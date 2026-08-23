@@ -13,7 +13,13 @@ setlocal
 
 echo [1/3] 创建虚拟环境...
 if not exist .venv (
-  py -3 -m venv .venv
+  REM 优先用 PATH 中的 python（GitHub Actions 的 setup-python 场景），否则退回 py launcher
+  where python >nul 2>nul
+  if %errorlevel%==0 (
+    python -m venv .venv
+  ) else (
+    py -3 -m venv .venv
+  )
 )
 call .venv\Scripts\activate.bat
 
