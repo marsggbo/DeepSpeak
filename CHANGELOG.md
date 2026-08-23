@@ -17,6 +17,7 @@ DeepSpeak 变更记录。格式基于 [Keep a Changelog](https://keepachangelog.
 ### 修复
 - **APK / Capacitor 环境页面全部打不开（根因）**：Capacitor 本地服务器对未知路径返回 **200 + index.html**（SPA fallback），而 `api()` 只在 `404 + 非 JSON` 时才降级本地引擎，200+HTML 被当作成功响应返回 `null`，导致各处 `cannot read properties of null (reading 'settings')` 等报错。修复：**任何非 JSON 响应都降级本地引擎**（覆盖 GitHub Pages 404、Capacitor 200+HTML、离线三种形态），APK 模拟环境全页面实测通过
 - **按钮去重**：删除逐句强化页头部「上一句/下一句」链接（与两侧悬浮大箭头重复）；步骤导航只保留「← 上一步」回退（前进由各面板主按钮承担，此前「下一步 →」与「听清了/明白了/提交」等主按钮重复）；「跳过，完成本句」仅保留在主动回忆步骤
+- **句子切换按钮**：按用户反馈移除两侧悬浮大箭头（视觉干扰），上一句/下一句改回页面**右上角**按钮（「← 上一句」「下一句 →」）
 - **体积分析**：DMG 大头为模型（277MB：whisper base.en 141MB + kokoro 142MB）+ 运行时（onnxruntime 75MB / PyAV 43MB / ffmpeg 47MB）。PyAV 是 faster-whisper 解码音频的硬依赖不可移除；可行优化为 whisper base.en → tiny.en（省约 100MB，转写精度略降），待用户拍板
 - **句子切换链接从未显示**（根因）：`viewUnit` 读取 `mat.units`，但接口返回结构为 `mat.material.units`，导致相邻句（上一句/下一句）恒为空——逐句强化页头部的切换链接与本次新增的大右箭头均受影响，已修复
 - **浏览器/开发缓存**：静态资源响应加 `Cache-Control: no-cache`（HTML/JS/CSS/JSON）；service worker 缓存升级 `deepspeak-v2 → v3`（发布新版本需递增）
