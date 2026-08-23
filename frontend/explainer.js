@@ -62,6 +62,7 @@
         html += `<div class="explainer-meaning">${esc(r.meaning)}</div>`;
         if (r.example_en) html += `<div class="explainer-example">${esc(r.example_en)}<br><span class="explainer-sub">${esc(r.example_zh || "")}</span></div>`;
         if (r.source === "llm") html += `<div class="explainer-src">来源：AI 解释</div>`;
+        else if (r.source === "online") html += `<div class="explainer-src">来源：🌐 在线词典（英文释义）</div>`;
         showPop(x, y, html + `<button class="explainer-close">✕</button>`);
       } else {
         showPop(x, y, `<div class="explainer-word">${esc(r.word || text)}</div>

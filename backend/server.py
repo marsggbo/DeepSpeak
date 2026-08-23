@@ -422,7 +422,14 @@ def api_router(handler):
             if hit:
                 return _ok(handler, {"found": True, "kind": "word", "word": hit[0],
                                      "pos": hit[1][0], "meaning": hit[1][1], "source": "wordbank"})
-            # 词库未命中且配置了 LLM：LLM 兜底释义（同样走隐私确认）
+            # 词库未命中：先试免费在线词典（dictionaryapi.dev，无需 key；离线自动跳过）
+            online = wordbank.lookup_online(text)
+            if online:
+                return _ok(handler, {"found": True, "kind": "word", "word": online["word"],
+                                     "pos": online["pos"], "meaning": online["meaning"],
+                                     "example_en": online["example_en"],
+                                     "phonetic": online["phonetic"], "source": "online"})
+            # 在线词典未命中且配置了 LLM：LLM 兜底释义（同样走隐私确认）
             provider = ai_mod.enabled_provider()
             if not provider:
                 return _ok(handler, {"found": False, "kind": "word",
@@ -540,6 +547,38 @@ def api_router(handler):
              json.dumps(results, ensure_ascii=False)),
         )
         return _ok(handler, {"wer": wer, "correct": total_c, "total": total_w})
+
+    # ---------- 精听 · 整段背诵对照 ----------
+    m = re.match(r"^/api/materials/(\d+)/focus/recite$", path)
+    if m and method == "POST":
+        mid = int(m.group(1))
+        text = (_body_json(handler).get("text") or "").strip()
+        if not text:
+            return _err(handler, "背诵内容为空")
+        units = db.query("SELECT text FROM training_units WHERE material_id=? ORDER BY seq", (mid,))
+        if not units:
+            return _err(handler, "该材料没有训练单元")
+        ref = " ".join(u["text"] for u in units)
+        w = diffing.wer(ref, text)
+        d = diffing.token_diff(ref, text)
+        errors, _minors = diffing.diff_stats(d)
+        total_words = len(textproc.tokens(ref))
+        try:
+            pass_wer = float(db.get_setting("recite_pass_wer", "0.25"))
+        except ValueError:
+            pass_wer = 0.25
+        # 记录一次背诵（复用 focus_dictations 表，便于统计里看到）
+        db.execute(
+            """INSERT INTO focus_dictations(material_id, overall_wer, correct_words, total_words,
+               sentence_count, detail_json) VALUES(?,?,?,?,?,?)""",
+            (mid, round(w, 3), total_words - errors, total_words, len(units),
+             json.dumps([{"text": u["text"]} for u in units], ensure_ascii=False)),
+        )
+        return _ok(handler, {
+            "wer": round(w, 3), "passed": w <= pass_wer,
+            "correct": total_words - errors, "total": total_words,
+            "diff": d, "ref_sentences": [u["text"] for u in units],
+        })
 
     # ---------- 打卡与统计 ----------
     if path == "/api/checkin" and method == "POST":

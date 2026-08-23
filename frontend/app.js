@@ -1476,8 +1476,15 @@ async function showStep(key) {
         studioCtx.lastDict = r;
         renderDictResult(r, input, submit);
         if (r.passed) {
-          $("#dict-submit").textContent = "看原文 →";
-          $("#dict-submit").onclick = async () => {
+          // 通过后：恢复按钮可点（此前遗漏 disabled=false 导致“看原文”点了没反应）、
+          // 移除“听不出”按钮，主按钮改为明确的下一步
+          btn.disabled = false;
+          btn.classList.remove("green");
+          btn.classList.add("primary");
+          btn.textContent = "进入对照理解 →";
+          const g = $("#dict-giveup");
+          if (g) g.remove();
+          btn.onclick = async () => {
             studioCtx.unit = (await api(`/api/units/${u.id}`)).unit;
             showStep("reveal");
           };
@@ -1562,8 +1569,9 @@ async function showStep(key) {
           studioCtx.unit = (await api(`/api/units/${u.id}`)).unit;
           showStep(r.status === "ACTIVE_RECALL" ? "recall" : "shadowing");
         });
-        btn.disabled = false;
-        if (r.passed) btn.textContent = "继续 →";
+        // 提交后：通过则禁用绿色按钮（避免误点重复提交），失败可重试
+        btn.disabled = r.passed;
+        btn.textContent = r.passed ? "✅ 已通过" : "再试一次";
       } catch (e) { toast(e.message, "error"); btn.disabled = false; }
     }
 
@@ -1655,8 +1663,9 @@ async function showStep(key) {
           studioCtx.unit = (await api(`/api/units/${u.id}`)).unit;
           showStep("done");
         }, true, { showRef, skipRecall });
-        btn.disabled = false;
-        if (r.passed) btn.textContent = "完成 →";
+        // 通过后禁用绿色按钮（避免“完成”误点重复提交），完成用结果区蓝色按钮
+        btn.disabled = r.passed;
+        btn.textContent = r.passed ? "✅ 已通过" : "再试一次";
       } catch (e) { toast(e.message, "error"); btn.disabled = false; }
     });
     $("#recall-giveup").addEventListener("click", () => {
@@ -1923,11 +1932,26 @@ function renderExpressionsPanel(u) {
         ${e.meaning ? `<div class="expr-zh">${esc(e.meaning)}</div>` : ""}
         ${e.intent ? `<div class="expr-zh">意图：${esc(e.intent)}${e.source === "llm" ? " <span class='badge NEW'>AI</span>" : ""}</div>` : ""}
         ${e.variants && e.variants.length ? `<div class="expr-vars">${e.variants.map(v => `<span class="expr-var">${esc(v)}</span>`).join("")}</div>` : ""}
+        <div class="btn-row" style="margin-top:6px">
+          <button class="btn sm save-expr" data-expr="${esc(e.expression)}" data-meaning="${esc(e.meaning || e.intent || "")}">⭐ 收藏到生词本</button>
+        </div>
       </div>`).join("")}
     <div class="btn-row" style="margin-top:12px">
       <button class="btn sm" id="enhance-btn">✨ AI 增强（可选）</button>
       <button class="btn sm" id="listen-expr">🔊 听原文</button>
     </div>`;
+  // 收藏表达到生词本（后续可在材料页生词面板复习回顾）
+  $$(".save-expr", panel).forEach(b => b.addEventListener("click", async () => {
+    try {
+      const r = await api(`/api/materials/${u.material_id}/focus/expressions`, {
+        method: "POST",
+        body: { items: [{ expression: b.dataset.expr, meaning: b.dataset.meaning, unit_id: u.id }] },
+      });
+      b.disabled = true;
+      b.textContent = r.saved ? "✅ 已收藏" : "已在生词本";
+      toast(r.saved ? "已加入生词本，可在材料页回顾" : "这个表达已经在生词本里了", r.saved ? "success" : "");
+    } catch (err) { toast(err.message, "error"); }
+  }));
   $("#enhance-btn").addEventListener("click", async () => {
     try {
       const r = await api(`/api/units/${u.id}/enhance`, { method: "POST" });
@@ -2386,11 +2410,62 @@ function renderFocusTrain() {
           <button class="btn" id="f-off-back">回到跟读</button>
           <button class="btn primary" id="f-off-done">能按原声念出来了！完成 →</button>
         </div>
+        <div class="recite-box" style="margin-top:16px;border-top:1px dashed var(--border);padding-top:14px">
+          <div class="panel-title">🎙 整段背诵对照（可选）</div>
+          <div class="panel-sub">不看文字把整段说出来：录音自动转写，或直接打字，然后对照全文看准确率</div>
+          <div id="recite-mic" style="margin-top:8px"></div>
+          <textarea class="input" id="recite-ta" rows="3" placeholder="背诵内容会填在这里，也可以直接打字…" style="margin-top:8px"></textarea>
+          <div class="btn-row" style="margin-top:10px">
+            <button class="btn primary" id="recite-submit">📊 对照评分</button>
+          </div>
+          <div id="recite-result"></div>
+        </div>
       </div>`;
     bindFocusPlaybar(panel, { loop: true });
     $("#f-off-back").addEventListener("click", () => focusAct("back"));
     $("#f-off-done").addEventListener("click", () => focusAct("offscript_done"));
+    // 整段背诵：ASR 可用时显示话筒（录音停止自动转写填入）
+    getHealth().then(h => {
+      if (!h.asr_available) return;
+      recordUI($("#recite-mic"), (text) => { $("#recite-ta").value = text; });
+    }).catch(() => { /* 无 ASR：纯打字 */ });
+    $("#recite-submit").addEventListener("click", async () => {
+      const ta = $("#recite-ta");
+      const text = ta.value.trim();
+      if (!text) return toast("先背诵输入内容（录音或打字）", "error");
+      const btn = $("#recite-submit");
+      btn.disabled = true;
+      try {
+        const r = await api(`/api/materials/${focusCtx.mid}/focus/recite`, {
+          method: "POST", body: { text },
+        });
+        const acc = Math.round((1 - r.wer) * 100);
+        const verdict = r.passed ? "🎉 整段背诵通过" : "💪 再练练";
+        $("#recite-result").innerHTML = `
+          <div class="result-banner ${r.passed ? "pass" : "fail"}" style="margin-top:12px">
+            ${verdict} · 准确率 ${acc}%（正确 ${r.correct}/${r.total} 词）
+          </div>
+          <div class="recite-diff">${renderReciteDiff(r.diff)}</div>`;
+      } catch (e) { toast(e.message, "error"); }
+      btn.disabled = false;
+    });
   }
+}
+
+/* 整段背诵 diff 渲染：正确词绿、漏词红（删除）、多词黄（插入）、替换红黄 */
+function renderReciteDiff(diff) {
+  if (!diff || !diff.length) return "";
+  let html = "";
+  for (const d of diff) {
+    if (d.op === "equal") html += `<span class="rd-ok">${esc(d.t)}</span>`;
+    else if (d.op === "delete") html += `<span class="rd-miss">${esc(d.t)}</span>`;
+    else if (d.op === "insert") html += `<span class="rd-extra">${esc(d.t)}</span>`;
+    else html += `<span class="rd-miss">${esc(d.ref)}</span>`;
+    html += " ";
+  }
+  return `<div class="reference-text" style="margin-top:8px">${html}</div>
+    <div class="hint" style="font-size:12px;color:var(--muted);margin-top:6px">
+      <span class="rd-ok">绿</span>=对 · <span class="rd-miss">红</span>=漏/错 · <span class="rd-extra">黄</span>=多背的</div>`;
 }
 
 /* ================= 听写草稿（localStorage 自动保存） ================= */

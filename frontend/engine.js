@@ -974,6 +974,25 @@ const DeepSpeakEngine = (() => {
           const meaning = Array.isArray(entry) ? entry[1] : (entry && entry.meaning) || "";
           return { ok: true, found: true, kind: "word", word, pos, meaning, example_en: "", example_zh: "", source: "wordbank" };
         }
+        // 词库未命中：免费在线词典（dictionaryapi.dev，无需 key；离线自动跳过）
+        try {
+          const word = (text.split(/\s+/)[0] || text).toLowerCase().replace(/[^a-z'-]/g, "");
+          if (word && !word.includes(" ")) {
+            const res = await fetch("https://api.dictionaryapi.dev/api/v2/entries/en/" + encodeURIComponent(word), { cache: "no-cache" });
+            if (res.ok) {
+              const list = await res.json();
+              const entry = Array.isArray(list) && list[0];
+              const m0 = entry && entry.meanings && entry.meanings[0];
+              const d0 = m0 && m0.definitions && m0.definitions[0];
+              if (m0 && d0 && d0.definition) {
+                const phonetic = (entry.phonetics || []).map(p => p.text).filter(Boolean)[0] || "";
+                return { ok: true, found: true, kind: "word", word,
+                         pos: m0.partOfSpeech || "", meaning: d0.definition,
+                         example_en: d0.example || "", phonetic, source: "online" };
+              }
+            }
+          }
+        } catch (e) { /* 离线/失败 → 静默跳过 */ }
         const word = (text.split(/\s+/)[0] || text).toLowerCase();
         return { ok: true, found: false, kind: "word", word, pos: "", meaning: "" };
       }

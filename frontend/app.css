@@ -509,3 +509,8 @@ kbd { background: var(--bg2); border: 1px solid var(--border); border-radius: 5p
 .gen-chip:disabled { opacity: .45; cursor: not-allowed; }
 .gen-seg { display: flex; gap: 6px; }
 .gen-seg .btn.sm { min-width: 64px; }
+
+/* ===== 精听 · 整段背诵对照 ===== */
+.rd-ok { color: var(--green); }
+.rd-miss { color: var(--red); text-decoration: line-through; }
+.rd-extra { color: var(--yellow); }

@@ -40,3 +40,45 @@ def lookup(text):
         if w in words:
             return w, words[w]
     return None
+
+
+def lookup_online(word, timeout=6):
+    """免费在线词典回退（dictionaryapi.dev，无需 API key）。
+
+    返回 {word, pos, meaning(英文释义), example_en, phonetic} 或 None。
+    网络失败/无网时静默返回 None（不影响离线词库主流程）。
+    """
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    w = (word or "").strip().lower().strip(".,!?;:'\"()[]- ")
+    if not w or " " in w:
+        return None
+    url = "https://api.dictionaryapi.dev/api/v2/entries/en/" + urllib.parse.quote(w)
+    req = urllib.request.Request(url, headers={"User-Agent": "DeepSpeak/0.1"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode())
+    except Exception:
+        return None
+    if not isinstance(data, list) or not data:
+        return None
+    entry = data[0]
+    phonetic = ""
+    for p in entry.get("phonetics", []):
+        if p.get("text"):
+            phonetic = p["text"]
+            break
+    meanings = entry.get("meanings") or []
+    if not meanings:
+        return None
+    m0 = meanings[0]
+    pos = m0.get("partOfSpeech", "")
+    defs = m0.get("definitions") or []
+    if not defs:
+        return None
+    meaning = defs[0].get("definition", "").strip()
+    example = defs[0].get("example", "").strip() if defs[0].get("example") else ""
+    return {"word": w, "pos": pos, "meaning": meaning,
+            "example_en": example, "phonetic": phonetic}

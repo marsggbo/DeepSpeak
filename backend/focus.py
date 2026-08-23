@@ -206,7 +206,14 @@ def material_full_audio_ready(material_id):
         key = meta.get("key", "")
         from .builtin import _material_audio_dir
         if key:
-            p = os.path.join(_material_audio_dir(key), "full.wav")
+            # 与 material_full_audio_path 的产物路径保持一致（含音色/语速指纹）
+            va = db.get_setting("tts_voice_a", "") or "Samantha"
+            vb = db.get_setting("tts_voice_b", "") or "Daniel"
+            try:
+                rate = int(db.get_setting("tts_rate", "175"))
+            except ValueError:
+                rate = 175
+            p = os.path.join(_material_audio_dir(key), f"full_{va}_{vb}_{rate}.wav")
             return os.path.exists(p) and os.path.getsize(p) > 100
     p = os.path.join(paths.materials_dir(), "focus", f"m{material_id:04d}.wav")
     return os.path.exists(p) and os.path.getsize(p) > 100
@@ -250,10 +257,21 @@ def material_full_audio_path(material_id):
                 parts = []
                 for i, u in enumerate(units):
                     voice = voices.get(u["speaker"], "Samantha")
-                    wav = tts.synthesize(
-                        u["text"], voice=voice, rate=rate,
-                        cache_key=f"builtin_{key}_{voice}_{rate}_{u['id']}",
-                    )
+                    try:
+                        wav = tts.synthesize(
+                            u["text"], voice=voice, rate=rate,
+                            cache_key=f"builtin_{key}_{voice}_{rate}_{u['id']}",
+                        )
+                    except Exception as e:
+                        # 单句失败不阻塞整体（后台线程异常会静默死亡，导致进度卡死）
+                        import traceback
+                        traceback.print_exc()
+                        _set_progress(material_id, "error", 0)
+                        db.execute(
+                            "UPDATE materials SET status='error', description=? WHERE id=?",
+                            (f"整段音频合成失败（第 {i + 1} 句）：{e}", material_id),
+                        )
+                        return None
                     if wav:
                         parts.append(wav)
                     _set_progress(material_id, "synthesizing", 30 + int(50 * (i + 1) / len(units)))
@@ -279,8 +297,18 @@ def material_full_audio_path(material_id):
             return path
         parts = []
         for i, u in enumerate(units):
-            wav = tts.synthesize(u["text"], voice=voice, rate=rate,
-                                 cache_key=f"focus_{voice}_{rate}_{u['id']}")
+            try:
+                wav = tts.synthesize(u["text"], voice=voice, rate=rate,
+                                     cache_key=f"focus_{voice}_{rate}_{u['id']}")
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                _set_progress(material_id, "error", 0)
+                db.execute(
+                    "UPDATE materials SET status='error', description=? WHERE id=?",
+                    (f"整段音频合成失败（第 {i + 1} 句）：{e}", material_id),
+                )
+                return None
             if wav:
                 parts.append(wav)
             _set_progress(material_id, "synthesizing", 30 + int(50 * (i + 1) / len(units)))
