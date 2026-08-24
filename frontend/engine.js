@@ -442,7 +442,7 @@ const DeepSpeakEngine = (() => {
       if (!window.dsImport) throw new Error("导入引擎未加载（import-engine.js）");
       await storeAudioBlob(mid, blob);
       mat.has_audio = true;
-      const model = getSetting("asr_model", "base.en");
+      const model = getSetting("asr_model", "tiny.en");
       const segs = await window.dsImport.transcribe(blob, {
         model,
         onProgress: (phase, frac) => {

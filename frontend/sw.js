@@ -5,7 +5,7 @@
    - /api/ → 永远走网络（后端模式数据不落缓存）
    所有 URL 均为相对路径解析，GitHub Pages 子路径部署同样可用。
    发布新版本时递增 CACHE 版本号即可整体刷新。 */
-const CACHE = "deepspeak-v14";
+const CACHE = "deepspeak-v15";
 const PRECACHE = [
   "./",
   "./index.html",
@@ -14,6 +14,7 @@ const PRECACHE = [
   "./engine.js",
   "./engine-data.js",
   "./import-engine.js",
+  "./transcribe-worker.js",
   "./tts-engine.js",
   "./recorder.js",
   "./manifest.webmanifest",

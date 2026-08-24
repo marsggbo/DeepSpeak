@@ -2800,12 +2800,13 @@ async function viewSettings() {
       <div class="setting-row">
         <div><div class="label">${localMode ? "识别模型" : "faster-whisper"}</div>
           <div class="desc">${localMode
-            ? "导入播客 / 音频文件时在浏览器内用 Whisper 转写（transformers.js，WebGPU/WASM）。首次联网下载模型后缓存，之后离线可用。tiny.en 更小更快，base.en 更准（与桌面同级）。"
+            ? "导入播客 / 音频文件时在浏览器内用 Whisper 转写（transformers.js，WebGPU/WASM，q8 量化）。首次联网下载模型后缓存，之后离线可用。tiny.en 更快更小，base.en 更准（与桌面同级）。"
             : health.asr_engine === "web"
             ? "✅ 浏览器语音识别（Web Speech API）— 录音会自动转写"
             : health.asr_available
               ? "✅ 已安装 · 录音会自动本地转写"
-              : "❌ 未安装 — 运行 ./run.sh 会自动安装（首次需联网下载模型）"}</div></div>
+              : "❌ 未安装 — 运行 ./run.sh 会自动安装（首次需联网下载模型）"}</div>
+          ${localMode ? `<div class="hint" id="asr-backend" style="font-size:12px;color:var(--muted);margin-top:4px">推理后端检测中…</div>` : ""}</div>
         <select id="asr-model">
           ${(localMode ? ["tiny.en", "base.en"] : ["tiny.en", "base.en", "small.en", "medium.en"]).map(m => `<option ${s.asr_model === m ? "selected" : ""}>${m}</option>`).join("")}
         </select>
@@ -3007,6 +3008,14 @@ async function viewSettings() {
     }));
   };
   renderProviders();
+
+  // 推理后端探测（本地引擎）：WebGPU 可用与否直接决定转写速度量级
+  if (localMode && window.dsImport && window.dsImport.detectBackend) {
+    window.dsImport.detectBackend().then((b) => {
+      const el = $("#asr-backend");
+      if (el) el.textContent = "推理后端：" + (b === "webgpu" ? "WebGPU（GPU 加速）" : "WASM（CPU 单线程）");
+    });
+  }
 
   // 主题切换（设置页）
   $$("#theme-seg button").forEach(b => b.addEventListener("click", () => {

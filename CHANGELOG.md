@@ -6,6 +6,10 @@ DeepSpeak 变更记录。格式基于 [Keep a Changelog](https://keepachangelog.
 ## [Unreleased]
 
 ### 新增
+- **手机端 Whisper 转写加速：多 Worker 并行**（浏览器/APK 内转写 3-4x，文本与单线程完全一致）：
+  - 新增 `frontend/transcribe-worker.js`：音频按 30s 窗口 / 20s 步长切块（与 transformers v2 内部 chunked 的 hop = chunk − 2×stride 完全同构），分发给最多 4 个 Worker 并行推理（数量按 `navigator.deviceMemory` 分级防低端机 OOM），合并时按每块左右 5s stride 区间去重（首块左 0、末块右 0），输出与单线程逐句一致（实测 157s 音频归一化文本完全相同）；worker 失败自动回退单线程
+  - 设置页（本地模式）新增「推理后端」实时探测：WebGPU（GPU 加速）/ WASM（CPU 单线程）——真机 WebView 若支持 WebGPU 可获数倍以上收益
+  - 转写读取设置的兜底值统一为 `tiny.en`（原为 `base.en`，设置未初始化时会落到慢 3 倍的模型）
 - **网页 / APK 内置 Kokoro 神经 TTS**（不再"没有内置 TTS"）：无后端的本地引擎模式（GitHub Pages PWA / 手机 APK）现在有和桌面版完全同款的语音合成——同一个 Kokoro v1.0 模型与 28 个音色（af_/am_ 美音、bf_/bm_ 英音，与桌面 `tts_engine_kokoro.py` 音色表一致）——
   - 新增 `frontend/tts-engine.js`（`window.dsTts`）：用 kokoro-js（官方 ONNX 模型的 JS 移植，espeak-ng 音素器 + onnxruntime-web 全部 WASM，不碰 WebGPU、安卓 WebView 可用）按句合成 24kHz 16bit WAV；q8 量化模型 ~114MB 首次使用时从 HF CDN 下载（HTTP 缓存命中后再次加载约 3s），合成结果按 (voice, rate, text) 缓存 IndexedDB（对齐桌面文件缓存语义）；`listVoices` 返回 28 音色
   - `engine.js`：`GET /tts/voices` 返回真实音色列表（设置页 TTS 区块自动启用）；新增 `GET /tts` 与 `ttsSynthesize`（文本单元播放 / 音色试听走本地合成，voice/rate 缺省取设置）；新增 `POST /materials` 文本导入（对齐桌面 `create_from_text`：SRT/VTT 按块取文本、纯文本分句，立即建单元）；文本材料单元音频 `kind:"tts"`（无静态音频，播放时按句合成）

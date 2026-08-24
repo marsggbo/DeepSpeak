@@ -252,7 +252,10 @@
   }
 
   // ================= Whisper 转写（@huggingface/transformers） =================
-  const MODEL_MAP = { "tiny.en": "Xenova/whisper-tiny.en", "base.en": "Xenova/whisper-base.en" };
+  const MODEL_MAP = {
+    "tiny.en": "Xenova/whisper-tiny.en",
+    "base.en": "Xenova/whisper-base.en",
+  };
   const TX_CDNS = [
     // v2 系列（@xenova/transformers）：纯 WASM 起步，WebGPU 仅显式请求才启用，
     // 安卓 WebView 无 GPU adapter 时回退干净（v3.0.x 在 device 选择上有缺陷会崩）
@@ -328,16 +331,114 @@
     return rendered.getChannelData(0);
   }
 
+  // 推理后端探测：WebView 里 navigator.gpu 可能存在但拿不到 adapter（会抛/返回 null）
+  async function detectBackend() {
+    try {
+      if (navigator.gpu) {
+        const adapter = await navigator.gpu.requestAdapter();
+        if (adapter) return "webgpu";
+      }
+    } catch (e) { /* 无 GPU → WASM */ }
+    return "wasm";
+  }
+
+  // 并行转写：与 transformers v2 内部 chunked 完全同构——30s 窗口、20s 步长
+  // （hop = chunk − 2×stride，stride 5s 作防截断缓冲），多 worker 并行推理利用多核；
+  // 合并时每块丢弃左右各 stride 区间（首块左 0、末块右 0），重叠区归前块。
+  const WINDOW_S = 30;
+  const STRIDE_S = 5;
+  const HOP_S = WINDOW_S - 2 * STRIDE_S;
+  async function transcribeParallel(repo, audio, onProgress) {
+    const dur = audio.length / 16000;
+    // worker 数按内存分级（每 worker 一份模型+推理缓冲），低端机避免 OOM
+    const mem = navigator.deviceMemory || 8;
+    const nW = Math.max(2, Math.min(mem >= 8 ? 4 : mem >= 4 ? 3 : 2, Math.floor((navigator.hardwareConcurrency || 4) / 2)));
+    const starts = [];
+    for (let s = 0; s < dur; s += HOP_S) starts.push(s);
+    const jobs = starts.map((s) => ({
+      i: s / HOP_S,
+      s,
+      len: Math.min(WINDOW_S, dur - s) * 16000,
+    }));
+    const workers = [];
+    for (let w = 0; w < nW; w++) workers.push(new Worker("transcribe-worker.js", { type: "module" }));
+    const results = new Array(jobs.length);
+    let done = 0;
+    try {
+      await new Promise((resolve, reject) => {
+        let wi = 0;
+        const busy = workers.map(() => false);
+        let failed = false;
+        const pump = () => {
+          for (let w = 0; w < workers.length && !failed; w++) {
+            if (busy[w] || wi >= jobs.length) continue;
+            const j = jobs[wi++];
+            busy[w] = true;
+            workers[w].postMessage({
+              id: j.i, repo, offsetSec: j.s,
+              audio: audio.slice(j.s * 16000, j.s * 16000 + j.len),
+            });
+          }
+          if (wi >= jobs.length && busy.every((b) => !b)) resolve();
+        };
+        workers.forEach((wk, w) => {
+          wk.onmessage = (ev) => {
+            const d = ev.data;
+            busy[w] = false;
+            if (failed) return;
+            if (!d.ok) { failed = true; reject(new Error(d.error)); return; }
+            results[d.id] = d.chunks;
+            done++;
+            onProgress("transcribe", done / jobs.length);
+            pump();
+          };
+          wk.onerror = (e) => {
+            if (!failed) { failed = true; reject(new Error("转写 Worker 异常: " + (e.message || ""))); }
+          };
+        });
+        pump();
+      });
+    } finally {
+      workers.forEach((w) => w.terminate());
+    }
+    // 合并：每块只保留 [s+left, s+len−right)（首块 left=0、末块 right=0），与 v2 内部去重一致
+    const out = [];
+    for (let i = 0; i < jobs.length; i++) {
+      const s = i * HOP_S;
+      const left = i === 0 ? 0 : STRIDE_S;
+      const right = i === jobs.length - 1 ? 0 : STRIDE_S;
+      const lo = s + left;
+      const hi = s + Math.min(WINDOW_S, dur - s) - right;
+      for (const c of results[i] || []) {
+        if (c.start >= lo && c.start < hi) out.push(c);
+      }
+    }
+    out.sort((a, b) => a.start - b.start);
+    return out;
+  }
+
   // transcribe：blob → [{text,start,end}]（秒）。onProgress(phase, frac, extra)
   async function transcribe(blob, opts) {
     opts = opts || {};
     const model = opts.model || "tiny.en";
     const onProgress = opts.onProgress || function () {};
     onProgress("model", 0);
+    const repo = MODEL_MAP[model] || MODEL_MAP["tiny.en"];
+    // 主线程先建 pipeline：负责模型下载进度上报；worker 复用同一份缓存（Cache API）
     const pipe = await getPipeline(model, (frac, file) => onProgress("model", frac, file));
     onProgress("decode", 0);
     const audio = await decodeAudio(blob);
     onProgress("transcribe", 0);
+    const dur = audio.length / 16000;
+    if (opts.parallel !== false && dur > WINDOW_S && typeof Worker !== "undefined") {
+      try {
+        const chunks = await transcribeParallel(repo, audio, onProgress);
+        onProgress("transcribe", 1);
+        return chunks;
+      } catch (e) {
+        console.warn("并行转写失败，回退单线程:", e);
+      }
+    }
     const result = await pipe(audio, {
       return_timestamps: true,
       chunk_length_s: 30,
@@ -359,6 +460,6 @@
     isNative: () => !!cap(),
     detectKind, fetchFeed, parseRss, fetchText, fetchBlob,
     splitSentences, expandSegmentsBySentence, buildUnits, analyzeUnit,
-    transcribe, loadTransformers,
+    transcribe, loadTransformers, detectBackend,
   };
 })();
