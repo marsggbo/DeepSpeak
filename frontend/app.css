@@ -455,9 +455,9 @@ kbd { background: var(--bg2); border: 1px solid var(--border); border-radius: 5p
   .logo, .sidebar-foot { display: none; }
   nav { flex-direction: row; justify-content: space-around; flex: 1; gap: 2px; }
   .nav-ico { width: 18px; height: 18px; }
-  .nav-item { flex-direction: row; gap: 6px; padding: 8px 10px; font-size: 13px; }
+  .nav-item { flex-direction: column; justify-content: center; gap: 2px; padding: 7px 4px 5px; font-size: 11px; }
   .nav-item.active::before { left: 25%; right: 25%; top: auto; bottom: auto; width: auto; height: 3px; top: -6px; }
-  .nav-label { display: block; }
+  .nav-label { display: block; white-space: nowrap; line-height: 1.25; }
   .nav-badge { position: absolute; margin-left: 0; transform: translate(14px, -14px); }
   main { padding: 14px 12px 92px; }
   .focus-dict-row { flex-wrap: wrap; }
