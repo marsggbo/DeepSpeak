@@ -497,7 +497,7 @@ const DeepSpeakEngine = (() => {
 
   // 设置默认值（对齐 db.py DEFAULT_SETTINGS；PWA 无后端时也保证阈值/导航等有值）
   const SETTING_DEFAULTS = {
-    asr_model: "base.en",
+    asr_model: "tiny.en",
     cors_proxy: "",
     tts_voice_a: "Samantha", tts_voice_b: "Daniel", tts_rate: "175",
     dictation_pass_wer: "0.12", speaking_pass_score: "60", recall_pass_score: "60",

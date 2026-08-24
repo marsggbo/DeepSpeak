@@ -14,7 +14,14 @@ DeepSpeak 变更记录。格式基于 [Keep a Changelog](https://keepachangelog.
 - **全平台统一 Logo**：D+S 蓝色标识落地网页/PWA（favicon + 侧栏 `icons/icon-192.png`）、Electron（`icon.icns`/`icon.ico` + BrowserWindow icon）、Android（15 个 `ic_launcher` mipmap + 前景图 + 背景色改深蓝 `#0e1116`）；母版入库 `frontend/icons/logo-master.png`
 
 ### 修复
-- ~~导入弹窗在网页 / APK 显示「仅桌面版可用」~~：已被上方"纯 JS 导入"取代——网页与 APK 现可真正导入 RSS/音频；本地引擎的错误信息同步友好化
+- **APK 导入 RSS 不工作（三个根因，模拟器实测修复）**：
+  1. `capHttp()` 取错命名空间：Capacitor 8 把插件挂在 `Capacitor.Plugins.CapacitorHttp`（而非 `Capacitor.CapacitorHttp`），导致 APK 永远走浏览器 fetch、被跨域 CORS 拦截 → 修正后走原生网络（实测 `X-Android-Response-Source: NETWORK 200`）
+  2. Android 明文流量被禁：BBC 等播客音频直链是 `http://`，原生请求报 `Cleartext HTTP traffic not permitted` → manifest 加 `android:usesCleartextTraffic="true"`
+  3. transformers.js v3.0.2 在安卓 WebView 必崩：`navigator.gpu` 存在但 adapter 获取失败时无干净回退（报 `no available backend found [webgpu]`）→ 改用 `@xenova/transformers@2.17.2`（v2 系列，纯 WASM，WebGPU 仅显式请求；WebView 实测管道创建+推理正常）
+- service worker 缓存版本 `v11 → v13`（import-engine.js 变更必须随版本号发布，否则老缓存继续发旧文件）
+
+### 变更
+- 本地引擎默认识别模型 `base.en → tiny.en`（APK/WASM 转写更快，设置页可切回）
 - **设置导航图标是太阳**（圆 + 8 条放射线的太阳造型）→ 替换为线性「滑杆」设置图标（细线 stroke 风格，与其余 4 个图标统一，选中仍随主题变色）
 - **移动端底部导航文字换行**：导航项由「图标+文字横排」改为「图标在上、文字在下」垂直排列，文字 `white-space: nowrap` 保证不换行（窄屏如 320px 也不会折行）
 - 移除侧栏底部「本地优先 · 无需 API Key」文案
@@ -23,7 +30,7 @@ DeepSpeak 变更记录。格式基于 [Keep a Changelog](https://keepachangelog.
 - **LOGO-PROMPT.md v6**：Logo 概念升级为「D = 微张的嘴，S 从嘴里流出并化为声波」（体现 DeepSpeak = 开口说英语），要求画图模型**单图输出 3×3 网格共 9 个候选**（编号 1-9、统一配色），方便对比挑选；附 9 种构图方向（唇线 / 开口圆弧 / 负空间 / 徽章 / 一笔画 / 条纹 / 气泡 / 双色 / 微笑）
 
 ### 变更
-- service worker 缓存版本 `v10 → v12`（本轮前端发布并预缓存 `import-engine.js`，发布新版本需递增）
+- service worker 缓存版本 `v10 → v13`（两轮前端发布并预缓存 `import-engine.js`，发布新版本需递增）
 
 ### 新增
 - **AI 生成材料**：材料页「✨ AI 生成」→ 专属页面（`#/generate`），勾选场景或自定义描述，调整难度/轮数/时长，或勾选「🎲 随机生成」一键生成当天学习内容。流程：LLM 生成对话（需在设置配置 AI Provider）→ 本机 Kokoro 按角色音色逐句合成 → 自动建训练单元与整段音频，生成过程实时显示进度（`POST /api/materials/generate` + 后台线程 + 占位材料 error 兜底）

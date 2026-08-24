@@ -19,7 +19,10 @@
   }
   function capHttp() {
     const C = cap();
-    return C && C.CapacitorHttp ? C.CapacitorHttp : null;
+    if (!C) return null;
+    // Capacitor 8：registerPlugin 把插件挂在 Plugins 命名空间下
+    const P = C.Plugins && C.Plugins.CapacitorHttp;
+    return P || C.CapacitorHttp || null;
   }
 
   // 网页跨域代理：{proxy}URL 形式拼接（末尾带 = 或 ? 的代理直接前缀拼原始 URL）。
@@ -251,8 +254,10 @@
   // ================= Whisper 转写（@huggingface/transformers） =================
   const MODEL_MAP = { "tiny.en": "Xenova/whisper-tiny.en", "base.en": "Xenova/whisper-base.en" };
   const TX_CDNS = [
-    "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2",
-    "https://unpkg.com/@huggingface/transformers@3.0.2",
+    // v2 系列（@xenova/transformers）：纯 WASM 起步，WebGPU 仅显式请求才启用，
+    // 安卓 WebView 无 GPU adapter 时回退干净（v3.0.x 在 device 选择上有缺陷会崩）
+    "https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2",
+    "https://unpkg.com/@xenova/transformers@2.17.2",
   ];
   let _tx = null;          // 已加载的 transformers 模块
   const _pipes = {};       // repo → pipeline
