@@ -601,10 +601,12 @@ const DeepSpeakEngine = (() => {
         label: e.meaning || "", variants: e.variants || [], source: e.source || "rule",
       })),
       explanation: "",
-      // 导入材料：整段音频里按区间播放；内置材料：单句独立 wav（整段播放）
-      audio: imported
-        ? { url: unitAudioUrl(u.material_id, uid), start_ms: u.start_ms || 0, end_ms: u.end_ms || 0, kind: "file" }
-        : { url: unitAudioUrl(u.material_id, uid), start_ms: 0, end_ms: 0, kind: "file" },
+      // 文本导入材料：无静态音频，播放时按句 Kokoro 合成（kind:"tts"）
+      audio: mat && mat.media_type === "text"
+        ? { url: "", kind: "tts", text: u.text }
+        : imported
+          ? { url: unitAudioUrl(u.material_id, uid), start_ms: u.start_ms || 0, end_ms: u.end_ms || 0, kind: "file" }
+          : { url: unitAudioUrl(u.material_id, uid), start_ms: 0, end_ms: 0, kind: "file" },
     };
   }
 
@@ -632,7 +634,9 @@ const DeepSpeakEngine = (() => {
       units: units.map((u) => ({
         id: u.id, seq: u.seq, text: u.text, status: u.status, scene: u.scene,
         difficulty: u.difficulty, learning_value: u.learning_value,
-        audio: { url: unitAudioUrl(mid, u.id), start_ms: imported ? (u.start_ms || 0) : 0, end_ms: imported ? (u.end_ms || 0) : 0, kind: "file" },
+        audio: mat.media_type === "text"
+          ? { url: "", kind: "tts", text: u.text }
+          : { url: unitAudioUrl(mid, u.id), start_ms: imported ? (u.start_ms || 0) : 0, end_ms: imported ? (u.end_ms || 0) : 0, kind: "file" },
       })),
       unit_total: units.length, unit_done: done, unit_mastered: mastered,
       unit_stats: { total: units.length, done, mastered },
@@ -1165,9 +1169,6 @@ const DeepSpeakEngine = (() => {
       return { ok: true };
     }
     // ---- 材料 ----
-    if (p === "/materials" && method === "POST") {
-      throw new Error("导入材料仅在桌面版可用（本模式为离线内置材料）");
-    }
     if (p === "/materials" && method === "GET") {
       const out = S.materials.map((mat) => {
         const units = getUnits(mat.id);
@@ -1183,6 +1184,54 @@ const DeepSpeakEngine = (() => {
         };
       });
       return { ok: true, materials: out };
+    }
+    // 文本导入（对齐桌面 pipeline.create_from_text：立即分句建单元；播放时按句 Kokoro 合成）
+    if (p === "/materials" && method === "POST") {
+      const text = String(b.text || "").trim();
+      if (!text) throw new Error("文本为空");
+      const title = (b.title || "").trim() || "粘贴文本";
+      const sourceType = b.source_type || "manual_text";
+      const mid = nextMaterialId();
+      S.materials.push({
+        id: mid, title, description: "通过文本导入", media_type: "text", language: "en",
+        scene: "", difficulty: 0, duration_ms: 0, status: "processing", tags: "",
+        source_type: sourceType, source_url: "", episodes: [],
+        process_step: "building", process_pct: 10, has_audio: false, created_at: nowStr(),
+      });
+      S.units[mid] = [];
+      await save();
+      try {
+        // 字幕（SRT/VTT）按块取文本行；纯文本走分句（对齐 parse_subtitle + split_sentences）
+        const segs = text.includes("-->")
+          ? (() => {
+              const out = [];
+              for (const block of text.replace(/\r/g, "").trim().split(/\n\s*\n/)) {
+                const ls = block.split("\n").map((s) => s.trim()).filter(Boolean);
+                let i = /^\d+$/.test(ls[0] || "") ? 1 : 0;
+                if (ls[i] && ls[i].includes("-->")) i++;
+                const t = ls.slice(i).join(" ");
+                if (t) out.push({ text: t, start: 0, end: 0 });
+              }
+              return out;
+            })()
+          : (window.dsImport ? window.dsImport.splitSentences(text) : text.split(/\n+/))
+              .map((t) => ({ text: String(t), start: 0, end: 0 }));
+        const built = window.dsImport ? window.dsImport.buildUnits(segs) : [];
+        if (!built.length) throw new Error("没有可学习的句子");
+        S.units[mid] = built.map((u) => ({
+          id: nextUnitId(), material_id: mid, seq: u.seq, text: u.text, speaker: u.speaker || "",
+          start_ms: u.start_ms || 0, end_ms: u.end_ms || 0, scene: u.scene || "",
+          difficulty: u.difficulty || 0, learning_value: u.learning_value || 0,
+          status: "NEW", expressions: u.expressions || [],
+        }));
+        const mat = getMaterial(mid);
+        mat.status = "ready"; mat.process_step = "done"; mat.process_pct = 100;
+        await save();
+        return { ok: true, id: mid, material: materialJson(mid) };
+      } catch (e) {
+        _markError(mid, e);
+        throw e;
+      }
     }
     if (p === "/materials/upload" || p === "/materials/url") {
       if (p === "/materials/url" && method === "POST") {
@@ -1498,7 +1547,20 @@ const DeepSpeakEngine = (() => {
     }
     if (p.startsWith("/ai/")) throw new Error("AI 功能仅在桌面版可用");
     if (p.startsWith("/speech/")) throw new Error("语音识别仅在桌面版可用（可安装本地 faster-whisper）");
-    if (p === "/tts/voices") return { ok: true, voices: [] };
+    if (p === "/tts/voices") {
+      return { ok: true, voices: window.dsTts ? window.dsTts.listVoices() : [] };
+    }
+    // 文本单元播放：按句 Kokoro 合成（voice/rate 缺省时用设置，对齐桌面 tts.py 默认）
+    if (p === "/tts" && method === "GET") {
+      if (!window.dsTts) throw new Error("TTS 引擎未加载（tts-engine.js）");
+      const text = String(b.text || "").trim();
+      if (!text) throw new Error("text 为空");
+      const voice = b.voice || getSetting("tts_voice_a", "af_heart");
+      const rate = Number(b.rate) || Number(getSetting("tts_rate", "175")) || 175;
+      const r = await window.dsTts.synthesize(text, voice, rate);
+      if (!r) throw new Error("合成失败");
+      return { ok: true, url: r.url, duration_ms: r.duration_ms };
+    }
     if (p === "/scenes") return { ok: true, scenes: [] };
 
     throw new Error(`接口不存在: ${path}`);
@@ -1512,7 +1574,15 @@ const DeepSpeakEngine = (() => {
     };
   }
 
-  return { api, ready: loadState, fullAudioUrl, importLocalFile };
+  // 按句合成（文本材料单元播放 / 设置页试听）：voice/rate 缺省时用设置
+  async function ttsSynthesize(text, voice, rate, onProgress) {
+    if (!window.dsTts) throw new Error("TTS 引擎未加载（tts-engine.js）");
+    const v = voice || getSetting("tts_voice_a", "af_heart");
+    const r = Number(rate) || Number(getSetting("tts_rate", "175")) || 175;
+    return window.dsTts.synthesize(text, v, r, onProgress);
+  }
+
+  return { api, ready: loadState, fullAudioUrl, importLocalFile, ttsSynthesize };
 })();
 
 // 浏览器全局挂载（const 不会自动成为 window 属性）

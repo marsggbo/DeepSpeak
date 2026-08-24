@@ -6,6 +6,11 @@ DeepSpeak 变更记录。格式基于 [Keep a Changelog](https://keepachangelog.
 ## [Unreleased]
 
 ### 新增
+- **网页 / APK 内置 Kokoro 神经 TTS**（不再"没有内置 TTS"）：无后端的本地引擎模式（GitHub Pages PWA / 手机 APK）现在有和桌面版完全同款的语音合成——同一个 Kokoro v1.0 模型与 28 个音色（af_/am_ 美音、bf_/bm_ 英音，与桌面 `tts_engine_kokoro.py` 音色表一致）——
+  - 新增 `frontend/tts-engine.js`（`window.dsTts`）：用 kokoro-js（官方 ONNX 模型的 JS 移植，espeak-ng 音素器 + onnxruntime-web 全部 WASM，不碰 WebGPU、安卓 WebView 可用）按句合成 24kHz 16bit WAV；q8 量化模型 ~114MB 首次使用时从 HF CDN 下载（HTTP 缓存命中后再次加载约 3s），合成结果按 (voice, rate, text) 缓存 IndexedDB（对齐桌面文件缓存语义）；`listVoices` 返回 28 音色
+  - `engine.js`：`GET /tts/voices` 返回真实音色列表（设置页 TTS 区块自动启用）；新增 `GET /tts` 与 `ttsSynthesize`（文本单元播放 / 音色试听走本地合成，voice/rate 缺省取设置）；新增 `POST /materials` 文本导入（对齐桌面 `create_from_text`：SRT/VTT 按块取文本、纯文本分句，立即建单元）；文本材料单元音频 `kind:"tts"`（无静态音频，播放时按句合成）
+  - `app.js`：导入弹窗「粘贴文本」本地模式可用（不再提示"仅桌面版可用"）；`playUnit` 支持 `kind:"tts"` 单元（合成后播放，首次显示"正在合成语音…"）；设置页音色试听本地合成；语速（词/分钟）沿用桌面默认 175、`speed = clamp(rate/175, 0.5, 2.0)` 与桌面一致
+  - 验证：桌面 Chrome 7/7、APK 模拟器 7/7（28 音色 / 文本导入 / 合成 3.5s / 播放 2.1s 进行中）
 - **网页 / APK 纯 JS 导入 RSS 与转写音频**（不再"仅桌面版可用"）：无后端的本地引擎模式（GitHub Pages PWA / 手机 APK / 离线）现可直接导入播客 RSS 与音频，全程浏览器内完成——
   - 新增 `frontend/import-engine.js`（`window.dsImport`）：`fetchFeed`/`parseRss`（DOMParser 解析 channel 标题与每集 title/enclosure/itunes:duration/description/pubDate）、`fetchBlob`（带下载进度）、`transcribe`（transformers.js Whisper，WebGPU 优先、自动回退 WASM，模型经浏览器 Cache API 缓存，首次联网下载后离线可用）、`buildUnits`（移植 `textproc.py` 分句：保护 Mr./U.S./小数点，按词数比例分配时间戳，输出 start_ms/end_ms + 场景/难度/学习价值）
   - `engine.js` 重写三处导入端点：`POST /materials/url`（RSS→draft+集数列表 / 音频直链→处理中并后台转写）、`POST /materials/{id}/podcast-episode`（下载→转写→建单元→ready）、并新增本地音频文件导入 `importLocalFile`、材料删除 `DELETE /materials/{id}`、重新处理 `reprocess`；整段音频 blob 存 IndexedDB（`audio_v1_{mid}`），播放用 `URL.createObjectURL`（`loadState` 重建），单元按 start_ms/end_ms 区间定位（与桌面 full.wav 一致）

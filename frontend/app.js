@@ -122,11 +122,28 @@ function stopPlay() {
   if (audioEl) { audioEl.__dead = true; audioEl.pause(); audioEl.src = ""; audioEl = null; }
 }
 
-function playUnit(unit, { loop = false, rate = 1.0, onEnd } = {}) {
+async function playUnit(unit, { loop = false, rate = 1.0, onEnd } = {}) {
   stopPlay();
   const info = unit.audio;
-  if (!info || !info.url) { toast("该单元没有音频", "error"); return; }
-  const audio = new Audio(info.url);
+  if (!info) { toast("该单元没有音频", "error"); return; }
+  let audio;
+  if (info.kind === "tts") {
+    // 文本导入单元：按句 Kokoro 合成播放（首次需下载语音模型 ~114MB，之后离线）
+    try {
+      const eng = useLocalEngine();
+      if (!eng || !eng.ttsSynthesize) throw new Error("TTS 不可用");
+      toast("正在合成语音…", "info");
+      const r = await eng.ttsSynthesize(info.text || unit.text);
+      if (!r || !r.url) throw new Error("合成失败");
+      audio = new Audio(r.url);
+    } catch (e) {
+      toast("语音合成失败：" + ((e && e.message) || e), "error");
+      return;
+    }
+  } else {
+    if (!info.url) { toast("该单元没有音频", "error"); return; }
+    audio = new Audio(info.url);
+  }
   audio.__dead = false;
   audioEl = audio;
   audio.playbackRate = rate;
@@ -722,11 +739,6 @@ function importModal() {
   `);
   $("#modal-x").addEventListener("click", closeModal);
   const body = $("#import-body");
-  const localOnlyNotice = (feature, why) => `
-    <div class="card" style="margin-top:10px;border-color:rgba(255,180,60,.45);background:rgba(255,180,60,.06)">
-      <div style="font-weight:600;margin-bottom:6px">⚠️ ${feature}仅桌面版可用</div>
-      <div style="font-size:13px;color:var(--muted);line-height:1.7">${why}（桌面版用本机 faster-whisper 转写、Kokoro 合成，数据不出电脑）。<br>网页版 / 手机 APK 只能练习内置材料，请在 macOS 或 Windows 桌面版中导入。</div>
-    </div>`;
   const show = async (tab) => {
     const local = await isLocalMode();
     $$(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === tab));
@@ -781,15 +793,12 @@ function importModal() {
       });
       $("#url-input").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#url-go").click(); });
     } else {
-      if (local) {
-        body.innerHTML = localOnlyNotice("粘贴文本导入", "文本需要先在本机合成语音（TTS）生成每句音频，才能进入听写 / 跟读训练");
-        return;
-      }
       body.innerHTML = `
         <label class="field">标题（可选）</label>
         <input class="input" id="txt-title" placeholder="例如：The Convo Starters - Episode 12" style="margin-bottom:10px">
         <label class="field">文本 / 字幕内容（SRT / VTT / 纯文本自动识别）</label>
         <textarea class="input" id="txt-text" placeholder="每句一行，或粘贴带时间轴的字幕…" style="min-height:150px"></textarea>
+        ${local ? `<div class="hint" style="color:var(--muted);font-size:12px;margin-top:8px">文本不出本机：在浏览器内用 Kokoro 神经语音按句合成音频（首次需联网下载语音模型，之后离线可用）</div>` : ""}
         <div class="btn-row" style="margin-top:12px"><button class="btn primary" id="txt-go">生成训练单元</button></div>`;
       $("#txt-go").addEventListener("click", async () => {
         const text = $("#txt-text").value.trim();
@@ -2813,7 +2822,7 @@ async function viewSettings() {
       ` : ""}
       ${hasTts ? `
       <div class="setting-row">
-        <div><div class="label">语音合成（TTS）</div><div class="desc">Kokoro 神经引擎离线生成；更换音色后内置材料会重新合成</div></div>
+        <div><div class="label">语音合成（TTS）</div><div class="desc">Kokoro 神经引擎离线合成（与桌面版同款模型与音色，首次使用需联网下载语音模型，之后离线可用）；更换音色后内置材料会重新合成</div></div>
         <div style="display:flex;gap:6px;align-items:center">
           <span style="font-size:12px;color:var(--muted)">A</span>
           <select id="tts-voice-a" style="width:140px">${voices.voices.filter(v => v.locale.startsWith("en")).map(v => `<option ${s.tts_voice_a === v.name ? "selected" : ""}>${v.name}</option>`).join("")}</select>
@@ -2836,7 +2845,7 @@ async function viewSettings() {
       ` : `
       <div class="setting-row">
         <div><div class="label">语音合成（TTS）</div>
-          <div class="desc">网页版没有内置离线 TTS。桌面版内置 Kokoro 神经引擎（28 个音色），在桌面版设置里换音色后，内置材料会按新音色重新合成。</div></div>
+          <div class="desc">Kokoro 神经引擎暂不可用（首次使用需联网下载语音模型，检查网络后重试）。桌面版内置同款 Kokoro 引擎（28 个音色）。</div></div>
       </div>
       `}
     </div>
@@ -3074,10 +3083,24 @@ async function viewSettings() {
     await api("/api/settings", { method: "PUT", body: { tts_voice_a: $("#tts-voice-a").value, tts_voice_b: $("#tts-voice-b").value, tts_rate: $("#tts-rate").value } });
     toast("已保存（内置材料音频将在下次播放时用新音色重新合成）", "success");
   });
-  // 音色试听：实时合成一段示例播放
-  const previewVoice = (id) => {
+  // 音色试听：实时合成一段示例播放（网页/APK 本地合成，桌面走后端）
+  const previewVoice = async (id) => {
     const voice = $(id).value;
     const rate = $("#tts-rate").value || 175;
+    if (await isLocalMode()) {
+      try {
+        const eng = useLocalEngine();
+        if (!eng || !eng.ttsSynthesize) throw new Error("TTS 不可用");
+        toast("正在合成试听语音…", "info");
+        const r = await eng.ttsSynthesize("Hi there! Welcome to DeepSpeak. Let's practice listening and speaking.", voice, rate);
+        if (!r || !r.url) throw new Error("合成失败");
+        const a = new Audio(r.url);
+        a.play().catch(() => toast("试音失败，请稍后再试", "error"));
+      } catch (e) {
+        toast("试音失败：" + ((e && e.message) || e), "error");
+      }
+      return;
+    }
     const url = `/api/tts?text=${encodeURIComponent("Hi there! Welcome to DeepSpeak. Let's practice listening and speaking.")}&voice=${encodeURIComponent(voice)}&rate=${rate}`;
     const a = new Audio(url);
     a.play().catch(() => toast("试音失败，音频尚未生成完成，请稍后再试", "error"));
