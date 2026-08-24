@@ -731,11 +731,10 @@ function importModal() {
     const local = await isLocalMode();
     $$(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === tab));
     if (tab === "file") {
-      if (local) {
-        body.innerHTML = localOnlyNotice("本地文件导入", "音频 / 视频 / 字幕文件需要先在本机转写成训练单元");
-        return;
-      }
-      body.innerHTML = `
+      body.innerHTML = local ? `
+        <div class="dropzone" id="dropzone">📁 点击选择或拖入音频文件<br><span style="font-size:12px">音频 MP3/M4A/WAV/AAC/OGG…</span></div>
+        <input type="file" id="file-input" class="hidden" accept=".mp3,.m4a,.wav,.aac,.ogg,.opus,.flac,.webm">
+        <div class="hint" style="color:var(--muted);font-size:12px;margin-top:8px">在浏览器内用 Whisper 转写（首次需联网下载识别模型，之后离线可用；音频不上传，全部本机处理）</div>` : `
         <div class="dropzone" id="dropzone">📁 点击选择或拖入文件<br><span style="font-size:12px">音频 MP3/M4A/WAV… 视频 MP4/MOV… 字幕 SRT/VTT… 文本 TXT</span></div>
         <input type="file" id="file-input" class="hidden" accept=".mp3,.m4a,.wav,.aiff,.flac,.mp4,.mov,.mkv,.srt,.vtt,.txt,.webm,.aac,.ogg">
         <div class="hint" style="color:var(--muted);font-size:12px;margin-top:8px">音频/视频会自动本地转写（faster-whisper，数据不出本机）</div>`;
@@ -750,17 +749,15 @@ function importModal() {
       });
       fi.addEventListener("change", () => { if (fi.files.length) uploadFile(fi.files[0]); });
     } else if (tab === "url") {
-      if (local) {
-        body.innerHTML = localOnlyNotice("URL / RSS 导入", "YouTube、播客 RSS、网页文章等链接需要下载音频后在本机转写，浏览器只能实时识别麦克风、无法转写音频文件");
-        return;
-      }
       body.innerHTML = `
-        <label class="field">粘贴链接（YouTube / Podcast RSS / 网页文章 / 音频直链）</label>
+        <label class="field">粘贴链接（Podcast RSS / 音频直链${local ? "" : " / YouTube / 网页文章"}）</label>
         <input class="input" id="url-input" placeholder="https://…" style="margin-bottom:10px">
         <div class="hint" style="color:var(--muted);font-size:12px;margin-bottom:6px">
-          YouTube：自动抓取公开字幕（不下载视频）；Podcast：解析 RSS 后选一集；
-          网页：提取正文生成阅读训练。遵守网站条款，仅导入可合法获取的内容。
+          ${local
+            ? "Podcast：解析 RSS 后选一集，浏览器内用 Whisper 转写（首次需联网下载识别模型）。音频直链直接转写。遵守网站条款，仅导入可合法获取的内容。"
+            : "YouTube：自动抓取公开字幕（不下载视频）；Podcast：解析 RSS 后选一集；网页：提取正文生成阅读训练。遵守网站条款，仅导入可合法获取的内容。"}
         </div>
+        ${local ? `<div class="hint" style="color:var(--muted);font-size:12px;margin-bottom:8px">💡 网页版跨域源需在「设置 → CORS 代理」填代理才能抓取；手机 APK 用原生网络请求，无需代理。</div>` : ""}
         <div class="hint" style="color:var(--muted);font-size:12px;margin-bottom:8px">✨ 推荐学习源（点一下直接导入，解析后选一集）：</div>
         <div id="preset-feeds" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
         <button class="btn primary" id="url-go">解析并导入</button>`;
@@ -808,6 +805,12 @@ function importModal() {
   show("file");
 
   async function uploadFile(file) {
+    if (await isLocalMode()) {
+      // 本地/网页/APK：blob 直接交给本地引擎（绕过后端 formData 上传）转写
+      const eng = useLocalEngine();
+      if (!eng || !eng.importLocalFile) return toast("本地引擎未就绪", "error");
+      return importWithStatus(() => eng.importLocalFile(file));
+    }
     const fd = new FormData();
     fd.append("file", file);
     await importWithStatus(() => api("/api/materials/upload", { method: "POST", formData: fd }));
@@ -2141,9 +2144,11 @@ async function viewReview() {
 let focusCtx = null;  // {mid, material, focus, reviewMode, dictAnswers, words}
 
 function focusFullAudio() {
-  const url = dsLocalEngine
-    ? `assets/audio/full_${focusCtx.mid}.wav`
-    : `/api/audio/material/${focusCtx.mid}/full.wav`;
+  // 导入材料（URL/播客/本地文件）：整段音频 objectURL；内置材料：静态 wav
+  const imported = focusCtx.material && focusCtx.material.audio_url;
+  const url = imported
+    ? focusCtx.material.audio_url
+    : (dsLocalEngine ? `assets/audio/full_${focusCtx.mid}.wav` : `/api/audio/material/${focusCtx.mid}/full.wav`);
   return { audio: { url, start_ms: 0, end_ms: 0, kind: "file" } };
 }
 
@@ -2211,6 +2216,7 @@ async function viewFocus(hash) {
 
 const PROCESS_STEP_LABELS = {
   download: "下载音频",
+  downloading_model: "下载识别模型",
   preparing: "准备中",
   transcribing: "语音转写中",
   building: "生成训练单元",
@@ -2772,6 +2778,7 @@ async function viewSettings() {
   ]);
   const s = settings.settings;
   const hasTts = !!(voices.voices && voices.voices.length);
+  const localMode = health.platform === "browser";
   const v = $("#view");
   v.innerHTML = `
     <div class="page-head"><div>
@@ -2779,19 +2786,31 @@ async function viewSettings() {
       <div class="page-sub">本地优先 · 所有数据默认只保存在这台电脑</div>
     </div></div>
 
-    <div class="section-title">🗣️ 语音识别（本地 ASR）</div>
+    <div class="section-title">🗣️ 语音识别${localMode ? "（浏览器内 Whisper）" : "（本地 ASR）"}</div>
     <div class="card">
       <div class="setting-row">
-        <div><div class="label">faster-whisper</div>
-          <div class="desc">${health.asr_engine === "web"
+        <div><div class="label">${localMode ? "识别模型" : "faster-whisper"}</div>
+          <div class="desc">${localMode
+            ? "导入播客 / 音频文件时在浏览器内用 Whisper 转写（transformers.js，WebGPU/WASM）。首次联网下载模型后缓存，之后离线可用。tiny.en 更小更快，base.en 更准（与桌面同级）。"
+            : health.asr_engine === "web"
             ? "✅ 浏览器语音识别（Web Speech API）— 录音会自动转写"
             : health.asr_available
               ? "✅ 已安装 · 录音会自动本地转写"
               : "❌ 未安装 — 运行 ./run.sh 会自动安装（首次需联网下载模型）"}</div></div>
         <select id="asr-model">
-          ${["tiny.en", "base.en", "small.en", "medium.en"].map(m => `<option ${s.asr_model === m ? "selected" : ""}>${m}</option>`).join("")}
+          ${(localMode ? ["tiny.en", "base.en"] : ["tiny.en", "base.en", "small.en", "medium.en"]).map(m => `<option ${s.asr_model === m ? "selected" : ""}>${m}</option>`).join("")}
         </select>
       </div>
+      ${localMode ? `
+      <div class="setting-row">
+        <div><div class="label">CORS 代理（仅网页版跨域抓取用）</div>
+          <div class="desc">网页版受浏览器同源限制，抓取跨域 RSS / 音频需一个代理前缀（形如 https://proxy/?url=）。链接与音频会经过该第三方，可留空关闭。手机 APK 用原生网络请求，忽略此项、无需代理。</div></div>
+      </div>
+      <div class="setting-row">
+        <input class="input" id="cors-proxy" value="${esc(s.cors_proxy || "")}" placeholder="留空 = 关闭（仅本地/APK/同源可用）" style="flex:1">
+        <button class="btn sm primary" id="save-cors" style="margin-left:8px">保存</button>
+      </div>
+      ` : ""}
       ${hasTts ? `
       <div class="setting-row">
         <div><div class="label">语音合成（TTS）</div><div class="desc">Kokoro 神经引擎离线生成；更换音色后内置材料会重新合成</div></div>
@@ -3040,6 +3059,16 @@ async function viewSettings() {
   });
 
   // 保存各项设置（PWA 无 TTS 音色时相关控件不渲染，需判空）
+  const asrSel = $("#asr-model");
+  if (asrSel) asrSel.addEventListener("change", async () => {
+    await api("/api/settings", { method: "PUT", body: { asr_model: asrSel.value } });
+    toast("已保存识别模型：" + asrSel.value, "success");
+  });
+  const saveCorsBtn = $("#save-cors");
+  if (saveCorsBtn) saveCorsBtn.addEventListener("click", async () => {
+    await api("/api/settings", { method: "PUT", body: { cors_proxy: $("#cors-proxy").value.trim() } });
+    toast($("#cors-proxy").value.trim() ? "已保存 CORS 代理" : "已关闭 CORS 代理", "success");
+  });
   const saveVoiceBtn = $("#save-voice");
   if (saveVoiceBtn) saveVoiceBtn.addEventListener("click", async () => {
     await api("/api/settings", { method: "PUT", body: { tts_voice_a: $("#tts-voice-a").value, tts_voice_b: $("#tts-voice-b").value, tts_rate: $("#tts-rate").value } });

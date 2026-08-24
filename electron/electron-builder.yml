@@ -3,6 +3,7 @@ appId: com.deepspeak.desktop
 productName: DeepSpeak
 directories:
   output: release
+  buildResources: build
 files:
   - main.js
   - package.json
@@ -16,12 +17,14 @@ mac:
   target:
     - dmg
   category: public.app-category.education
+  icon: build/icon.icns
   # 自用不签名：跳过 codesign
   identity: null
 
 win:
   target:
     - nsis
+  icon: build/icon.ico
 
 nsis:
   oneClick: false

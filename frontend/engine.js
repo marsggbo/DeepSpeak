@@ -358,6 +358,7 @@ const DeepSpeakEngine = (() => {
         for (const [mid, units] of Object.entries(S.units)) {
           for (const u of units) if (u.material_id === undefined) u.material_id = Number(mid);
         }
+        await rebuildAudioUrls();
       } else {
         S = initialState();
         S.units = initUnits();
@@ -372,9 +373,132 @@ const DeepSpeakEngine = (() => {
 
   function save() { return idbSet(STATE_KEY, S); }
 
+  // ================= 导入材料的音频存储（整段 blob 存 IndexedDB，播放走 objectURL） =================
+  // 内置材料音频是静态 wav；用户导入（URL/播客/本地文件）的整段音频作为 blob 存 IndexedDB，
+  // 单元用 start_ms/end_ms 在整段里区间播放（与桌面 full.wav + 区间播放一致）。
+  const AUDIO_KEY = (mid) => `audio_v1_${mid}`;
+  const _audioUrls = {}; // mid → objectURL（内存缓存，刷新后由 rebuildAudioUrls 重建）
+  function isImported(mat) {
+    return !!mat && mat.source_type && mat.source_type !== "builtin";
+  }
+  async function storeAudioBlob(mid, blob) {
+    await idbSet(AUDIO_KEY(mid), blob);
+    if (_audioUrls[mid]) { try { URL.revokeObjectURL(_audioUrls[mid]); } catch (e) {} }
+    _audioUrls[mid] = URL.createObjectURL(blob);
+    return _audioUrls[mid];
+  }
+  async function rebuildAudioUrls() {
+    for (const mat of S.materials) {
+      if (!isImported(mat) || !mat.has_audio || _audioUrls[mat.id]) continue;
+      try {
+        const blob = await idbGet(AUDIO_KEY(mat.id));
+        if (blob) _audioUrls[mat.id] = URL.createObjectURL(blob);
+      } catch (e) { /* 音频丢失：材料仍可看文本 */ }
+    }
+  }
+  function importedAudioUrl(mid) { return _audioUrls[mid] || ""; }
+  function nextMaterialId() {
+    if (!S.seq.material) {
+      const maxId = S.materials.reduce((mx, m) => Math.max(mx, m.id || 0), 0);
+      S.seq.material = Math.max(1000, maxId);
+    }
+    return ++S.seq.material;
+  }
+  function nextUnitId() {
+    if (!S.seq.unit) {
+      let mx = 0;
+      for (const units of Object.values(S.units)) for (const u of units) mx = Math.max(mx, u.id || 0);
+      S.seq.unit = Math.max(1000, mx);
+    }
+    return ++S.seq.unit;
+  }
+
+  // 下载 → 浏览器内 Whisper 转写 → 分句建单元（对齐桌面 pipeline._download_remote_audio + _asr_and_build）。
+  // 不 await（前端轮询 /materials/{id} 的 process_step/process_pct 展示进度），失败置 error。
+  async function _processAudio(mid, url) {
+    const mat = getMaterial(mid);
+    if (!mat) return;
+    const setProg = (step, pct) => { mat.process_step = step; if (pct != null) mat.process_pct = Math.round(pct); };
+    try {
+      if (!window.dsImport) throw new Error("导入引擎未加载（import-engine.js）");
+      mat.status = "processing"; mat.error = ""; setProg("download", 5);
+      const proxy = getSetting("cors_proxy", "");
+      const blob = await window.dsImport.fetchBlob(url, proxy, (recv, total) => {
+        if (total) setProg("download", 5 + (recv / total) * 20);
+      });
+      setProg("download", 25);
+      await _transcribeAndBuild(mid, blob);
+    } catch (e) {
+      _markError(mid, e);
+    }
+  }
+
+  // 已有 blob（本地文件 / 已存音频）→ 转写建单元
+  async function _transcribeAndBuild(mid, blob) {
+    const mat = getMaterial(mid);
+    if (!mat) return;
+    const setProg = (step, pct) => { mat.process_step = step; if (pct != null) mat.process_pct = Math.round(pct); };
+    try {
+      if (!window.dsImport) throw new Error("导入引擎未加载（import-engine.js）");
+      await storeAudioBlob(mid, blob);
+      mat.has_audio = true;
+      const model = getSetting("asr_model", "base.en");
+      const segs = await window.dsImport.transcribe(blob, {
+        model,
+        onProgress: (phase, frac) => {
+          if (phase === "model") setProg("downloading_model", 25 + (frac || 0) * 20);
+          else if (phase === "decode") setProg("preparing", 46);
+          else if (phase === "transcribe") setProg("transcribing", 50 + (frac || 0) * 45);
+        },
+      });
+      setProg("building", 96);
+      const built = window.dsImport.buildUnits(segs);
+      if (!built.length) throw new Error("没有识别出可学习的句子");
+      S.units[mid] = built.map((u) => ({
+        id: nextUnitId(), material_id: mid, seq: u.seq, text: u.text, speaker: u.speaker || "",
+        start_ms: u.start_ms || 0, end_ms: u.end_ms || 0, scene: u.scene || "",
+        difficulty: u.difficulty || 0, learning_value: u.learning_value || 0,
+        status: "NEW", expressions: u.expressions || [],
+      }));
+      const last = segs[segs.length - 1];
+      mat.duration_ms = last ? Math.round((last.end || 0) * 1000) : 0;
+      mat.status = "ready"; setProg("done", 100);
+      await save();
+    } catch (e) {
+      _markError(mid, e);
+    }
+  }
+
+  function _markError(mid, e) {
+    const mat = getMaterial(mid);
+    if (!mat) return;
+    mat.status = "error"; mat.process_step = "error"; mat.process_pct = 0;
+    mat.error = String((e && e.message) || e);
+    mat.description = `处理失败：${mat.error}。可换一集，或在桌面版导入。`;
+    try { save(); } catch (e2) {}
+  }
+
+  // 本地文件导入（app.js 直接调用，绕过 api 的 formData 限制）
+  async function importLocalFile(file) {
+    await loadState();
+    const mid = nextMaterialId();
+    const name = file && file.name ? file.name.replace(/\.[^.]+$/, "") : "本地音频";
+    S.materials.push({
+      id: mid, title: name, description: "本地文件导入", media_type: "audio", language: "en",
+      scene: "", difficulty: 0, duration_ms: 0, status: "processing", tags: "",
+      source_type: "local_file", source_url: "", episodes: [], process_step: "preparing",
+      process_pct: 5, has_audio: false, created_at: nowStr(),
+    });
+    S.units[mid] = [];
+    await save();
+    _transcribeAndBuild(mid, file); // 后台转写，前端轮询
+    return { ok: true, id: mid };
+  }
+
   // 设置默认值（对齐 db.py DEFAULT_SETTINGS；PWA 无后端时也保证阈值/导航等有值）
   const SETTING_DEFAULTS = {
     asr_model: "base.en",
+    cors_proxy: "",
     tts_voice_a: "Samantha", tts_voice_b: "Daniel", tts_rate: "175",
     dictation_pass_wer: "0.12", speaking_pass_score: "60", recall_pass_score: "60",
     ai_consent: "ask", ai_scope: "sentence", focus_free_nav: "0",
@@ -446,12 +570,16 @@ const DeepSpeakEngine = (() => {
     return { label: l[0], emoji: l[1] };
   }
 
-  // 内置材料：音频静态打包（frontend/assets/audio/）
+  // 内置材料：音频静态打包（frontend/assets/audio/）；导入材料：整段 blob objectURL
   function unitAudioUrl(mid, uid) {
+    const mat = getMaterial(mid);
+    if (isImported(mat)) return importedAudioUrl(mid);
     const key = MATERIAL_KEYS[mid] || `m${mid}`;
     return `assets/audio/builtin_${key}_${uid}.wav`;
   }
   function fullAudioUrl(mid) {
+    const mat = getMaterial(mid);
+    if (isImported(mat)) return importedAudioUrl(mid);
     return `assets/audio/full_${mid}.wav`;
   }
 
@@ -459,6 +587,8 @@ const DeepSpeakEngine = (() => {
   function unitJson(uid) {
     const u = getUnit(uid);
     if (!u) return null;
+    const mat = getMaterial(u.material_id);
+    const imported = isImported(mat);
     const exprs = u.expressions || [];
     return {
       id: u.id, material_id: u.material_id, seq: u.seq, text: u.text,
@@ -471,7 +601,10 @@ const DeepSpeakEngine = (() => {
         label: e.meaning || "", variants: e.variants || [], source: e.source || "rule",
       })),
       explanation: "",
-      audio: { url: unitAudioUrl(u.material_id, uid), start_ms: 0, end_ms: 0, kind: "file" },
+      // 导入材料：整段音频里按区间播放；内置材料：单句独立 wav（整段播放）
+      audio: imported
+        ? { url: unitAudioUrl(u.material_id, uid), start_ms: u.start_ms || 0, end_ms: u.end_ms || 0, kind: "file" }
+        : { url: unitAudioUrl(u.material_id, uid), start_ms: 0, end_ms: 0, kind: "file" },
     };
   }
 
@@ -479,24 +612,31 @@ const DeepSpeakEngine = (() => {
   function materialJson(mid) {
     const mat = getMaterial(mid);
     if (!mat) return null;
+    const imported = isImported(mat);
     const units = getUnits(mid);
     const done = units.filter((u) => ["REVIEW_DUE", "MASTERED"].includes(u.status)).length;
     const mastered = units.filter((u) => u.status === "MASTERED").length;
     const { label, emoji } = sceneLabel(mat.scene || "");
     const f = focusProgress(mid);
+    const hasAudio = imported ? !!importedAudioUrl(mid) : true;
     return {
       ...mat,
+      is_builtin: !imported,
       scene_label: label, scene_emoji: emoji,
-      source: { type: "builtin", url: "", episodes: [], error: "", has_audio: true },
-      source_type: "builtin",
+      source: imported
+        ? { type: mat.source_type, url: mat.source_url || "", episodes: mat.episodes || [], error: mat.error || "", has_audio: hasAudio }
+        : { type: "builtin", url: "", episodes: [], error: "", has_audio: true },
+      source_type: mat.source_type || "builtin",
+      process_step: mat.process_step || "", process_pct: mat.process_pct || 0,
+      audio_url: imported ? importedAudioUrl(mid) : "",
       units: units.map((u) => ({
         id: u.id, seq: u.seq, text: u.text, status: u.status, scene: u.scene,
         difficulty: u.difficulty, learning_value: u.learning_value,
-        audio: { url: unitAudioUrl(mid, u.id), start_ms: 0, end_ms: 0, kind: "file" },
+        audio: { url: unitAudioUrl(mid, u.id), start_ms: imported ? (u.start_ms || 0) : 0, end_ms: imported ? (u.end_ms || 0) : 0, kind: "file" },
       })),
       unit_total: units.length, unit_done: done, unit_mastered: mastered,
       unit_stats: { total: units.length, done, mastered },
-      focus: { ...f, audio_ready: true },
+      focus: { ...f, audio_ready: hasAudio },
     };
   }
 
@@ -1036,7 +1176,8 @@ const DeepSpeakEngine = (() => {
         const { label, emoji } = sceneLabel(mat.scene || "");
         return {
           ...mat, scene_label: label, scene_emoji: emoji,
-          source_type: "builtin",
+          source_type: mat.source_type || "builtin",
+          is_builtin: !isImported(mat),
           unit_total: units.length, unit_done: done, unit_mastered: mastered,
           focus_status: getFocus(mat.id).status,
         };
@@ -1044,7 +1185,40 @@ const DeepSpeakEngine = (() => {
       return { ok: true, materials: out };
     }
     if (p === "/materials/upload" || p === "/materials/url") {
-      throw new Error("导入材料仅在桌面版可用（本模式为离线内置材料）");
+      if (p === "/materials/url" && method === "POST") {
+        const url = String(b.url || "").trim();
+        if (!url) throw new Error("URL 为空");
+        if (!window.dsImport) throw new Error("导入引擎未加载（import-engine.js）");
+        const feed = await window.dsImport.fetchFeed(url, getSetting("cors_proxy", ""));
+        if (feed.kind === "podcast") {
+          const mid = nextMaterialId();
+          S.materials.push({
+            id: mid, title: feed.feed.title || "Podcast Feed",
+            description: "Podcast RSS 导入（请选择一期节目）", media_type: "audio", language: "en",
+            scene: "", difficulty: 0, duration_ms: 0, status: "draft", tags: "",
+            source_type: "podcast", source_url: url, episodes: feed.feed.episodes,
+            process_step: "", process_pct: 0, has_audio: false, created_at: nowStr(),
+          });
+          S.units[mid] = [];
+          await save();
+          return { ok: true, id: mid, material: materialJson(mid) };
+        }
+        // 音频直链
+        const mid = nextMaterialId();
+        const name = (decodeURIComponent((url.split("/").pop() || "").split("?")[0]) || "Remote Audio");
+        S.materials.push({
+          id: mid, title: name, description: "远程音频导入", media_type: "audio", language: "en",
+          scene: "", difficulty: 0, duration_ms: 0, status: "processing", tags: "",
+          source_type: "url", source_url: url, episodes: [], process_step: "download",
+          process_pct: 5, has_audio: false, created_at: nowStr(),
+        });
+        S.units[mid] = [];
+        await save();
+        _processAudio(mid, url); // 后台下载+转写，前端轮询进度
+        return { ok: true, id: mid, material: materialJson(mid) };
+      }
+      // 本地文件上传：需 blob，走 dsLocalEngine.importLocalFile（app.js 直接调用），此路由不处理
+      throw new Error("本地文件导入请在素材页选择文件（网页/APK 已支持音频文件转写）");
     }
     m = p.match(/^\/materials\/(\d+)\/focus\/prepare$/);
     if (m && method === "POST") return { ok: true, message: "离线模式音频已内置" };
@@ -1122,12 +1296,53 @@ const DeepSpeakEngine = (() => {
       return { ok: true, tags };
     }
     m = p.match(/^\/materials\/(\d+)\/podcast-episode$/);
-    if (m) throw new Error("播客导入仅在桌面版可用");
+    if (m && method === "POST") {
+      const mid = Number(m[1]);
+      const mat = getMaterial(mid);
+      if (!mat) throw new Error("材料不存在");
+      const url = String(b.url || "").trim();
+      if (!url) throw new Error("请选择一集");
+      if (mat.status === "processing") return { ok: true, message: "该集正在处理中" };
+      // 用单集标题更新素材名，方便识别选了哪一集（对齐 pipeline.pick_podcast_episode）
+      const ep = (mat.episodes || []).find((e) => e.url === url);
+      if (ep && ep.title) { mat.title = ep.title; mat.description = `Podcast 单集 · ${ep.title}`; }
+      mat.status = "processing"; mat.process_step = "download"; mat.process_pct = 5;
+      await save();
+      _processAudio(mid, url); // 后台下载+转写，前端轮询进度
+      return { ok: true, message: "开始下载并转写该集" };
+    }
     m = p.match(/^\/materials\/(\d+)$/);
     if (m && method === "GET") {
       const mat = materialJson(Number(m[1]));
       if (!mat) throw new Error("材料不存在");
       return { ok: true, material: mat };
+    }
+    if (m && method === "DELETE") {
+      const mid = Number(m[1]);
+      const idx = S.materials.findIndex((x) => x.id === mid);
+      if (idx >= 0) S.materials.splice(idx, 1);
+      delete S.units[mid];
+      delete S.focus[mid];
+      S.words = S.words.filter((w) => w.material_id !== mid);
+      if (_audioUrls[mid]) { try { URL.revokeObjectURL(_audioUrls[mid]); } catch (e) {} delete _audioUrls[mid]; }
+      try { await idbSet(AUDIO_KEY(mid), undefined); } catch (e) {}
+      await save();
+      return { ok: true };
+    }
+    // 重新处理（导入音频失败后重试）：优先用已存音频 blob，其次用 source_url 重新下载
+    m = p.match(/^\/materials\/(\d+)\/reprocess$/);
+    if (m && method === "POST") {
+      const mid = Number(m[1]);
+      const mat = getMaterial(mid);
+      if (!mat) throw new Error("材料不存在");
+      S.units[mid] = [];
+      mat.status = "processing"; mat.process_step = "preparing"; mat.process_pct = 5; mat.error = "";
+      await save();
+      const blob = await idbGet(AUDIO_KEY(mid));
+      if (blob) _transcribeAndBuild(mid, blob);
+      else if (mat.source_url) _processAudio(mid, mat.source_url);
+      else { _markError(mid, new Error("该素材没有可重试的音频来源")); throw new Error("该素材没有可重试的音频来源"); }
+      return { ok: true, message: "已重新提交，正在转写" };
     }
     // ---- 单元 ----
     m = p.match(/^\/units\/(\d+)$/);
@@ -1297,7 +1512,7 @@ const DeepSpeakEngine = (() => {
     };
   }
 
-  return { api, ready: loadState };
+  return { api, ready: loadState, fullAudioUrl, importLocalFile };
 })();
 
 // 浏览器全局挂载（const 不会自动成为 window 属性）

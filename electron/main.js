@@ -108,6 +108,7 @@ function createWindow() {
     width: 1280,
     height: 860,
     title: "DeepSpeak",
+    icon: path.join(__dirname, "build", process.platform === "win32" ? "icon.ico" : "icon.icns"),
     autoHideMenuBar: true,
     webPreferences: {
       contextIsolation: true,

@@ -1,5 +1,10 @@
 {
   "appId": "com.deepspeak.app",
   "appName": "DeepSpeak",
-  "webDir": "../frontend"
+  "webDir": "../frontend",
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
 }

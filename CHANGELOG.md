@@ -5,8 +5,16 @@ DeepSpeak 变更记录。格式基于 [Keep a Changelog](https://keepachangelog.
 
 ## [Unreleased]
 
+### 新增
+- **网页 / APK 纯 JS 导入 RSS 与转写音频**（不再"仅桌面版可用"）：无后端的本地引擎模式（GitHub Pages PWA / 手机 APK / 离线）现可直接导入播客 RSS 与音频，全程浏览器内完成——
+  - 新增 `frontend/import-engine.js`（`window.dsImport`）：`fetchFeed`/`parseRss`（DOMParser 解析 channel 标题与每集 title/enclosure/itunes:duration/description/pubDate）、`fetchBlob`（带下载进度）、`transcribe`（transformers.js Whisper，WebGPU 优先、自动回退 WASM，模型经浏览器 Cache API 缓存，首次联网下载后离线可用）、`buildUnits`（移植 `textproc.py` 分句：保护 Mr./U.S./小数点，按词数比例分配时间戳，输出 start_ms/end_ms + 场景/难度/学习价值）
+  - `engine.js` 重写三处导入端点：`POST /materials/url`（RSS→draft+集数列表 / 音频直链→处理中并后台转写）、`POST /materials/{id}/podcast-episode`（下载→转写→建单元→ready）、并新增本地音频文件导入 `importLocalFile`、材料删除 `DELETE /materials/{id}`、重新处理 `reprocess`；整段音频 blob 存 IndexedDB（`audio_v1_{mid}`），播放用 `URL.createObjectURL`（`loadState` 重建），单元按 start_ms/end_ms 区间定位（与桌面 full.wav 一致）
+  - 跨域抓取：**APK 启用 Capacitor 内置 `CapacitorHttp`**（原生请求天然绕过 CORS，全本地零代理）；**网页**在「设置 → CORS 代理」提供可编辑、可清空的代理输入（预填公共代理，附"链接与音频会经过第三方"提示，APK 端忽略此设置）
+  - 导入弹窗本地模式改为真实 UI（URL/RSS 输入 + 6 个推荐源 + 本地音频文件上传区），首次转写显示"下载识别模型 …%"进度；设置页新增「语音识别模型」（tiny.en / base.en）与「CORS 代理」两项
+- **全平台统一 Logo**：D+S 蓝色标识落地网页/PWA（favicon + 侧栏 `icons/icon-192.png`）、Electron（`icon.icns`/`icon.ico` + BrowserWindow icon）、Android（15 个 `ic_launcher` mipmap + 前景图 + 背景色改深蓝 `#0e1116`）；母版入库 `frontend/icons/logo-master.png`
+
 ### 修复
-- **导入弹窗桌面版专属提示**：网页 / 手机 APK（无后端本地引擎模式）打开「导入内容」时，URL/RSS、本地文件、粘贴文本三个 tab 均直接显示醒目的「仅桌面版可用」说明（浏览器只能实时识别麦克风、无法转写音频文件，且没有本地 TTS），不再出现点击「解析并导入」后才报错的困惑流程；本地引擎的文本导入错误信息同步友好化
+- ~~导入弹窗在网页 / APK 显示「仅桌面版可用」~~：已被上方"纯 JS 导入"取代——网页与 APK 现可真正导入 RSS/音频；本地引擎的错误信息同步友好化
 - **设置导航图标是太阳**（圆 + 8 条放射线的太阳造型）→ 替换为线性「滑杆」设置图标（细线 stroke 风格，与其余 4 个图标统一，选中仍随主题变色）
 - **移动端底部导航文字换行**：导航项由「图标+文字横排」改为「图标在上、文字在下」垂直排列，文字 `white-space: nowrap` 保证不换行（窄屏如 320px 也不会折行）
 - 移除侧栏底部「本地优先 · 无需 API Key」文案
@@ -15,7 +23,7 @@ DeepSpeak 变更记录。格式基于 [Keep a Changelog](https://keepachangelog.
 - **LOGO-PROMPT.md v6**：Logo 概念升级为「D = 微张的嘴，S 从嘴里流出并化为声波」（体现 DeepSpeak = 开口说英语），要求画图模型**单图输出 3×3 网格共 9 个候选**（编号 1-9、统一配色），方便对比挑选；附 9 种构图方向（唇线 / 开口圆弧 / 负空间 / 徽章 / 一笔画 / 条纹 / 气泡 / 双色 / 微笑）
 
 ### 变更
-- service worker 缓存版本 `v10 → v11`（本轮前端发布，发布新版本需递增）
+- service worker 缓存版本 `v10 → v12`（本轮前端发布并预缓存 `import-engine.js`，发布新版本需递增）
 
 ### 新增
 - **AI 生成材料**：材料页「✨ AI 生成」→ 专属页面（`#/generate`），勾选场景或自定义描述，调整难度/轮数/时长，或勾选「🎲 随机生成」一键生成当天学习内容。流程：LLM 生成对话（需在设置配置 AI Provider）→ 本机 Kokoro 按角色音色逐句合成 → 自动建训练单元与整段音频，生成过程实时显示进度（`POST /api/materials/generate` + 后台线程 + 占位材料 error 兜底）
