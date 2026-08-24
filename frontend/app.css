@@ -69,6 +69,7 @@ button { font-family: inherit; }
 .logo-name { font-weight: 700; font-size: 17px; letter-spacing: .3px; }
 .logo-sub { font-size: 11px; color: var(--muted); }
 nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.nav-ico { width: 20px; height: 20px; flex-shrink: 0; }
 .nav-item {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 12px; border-radius: 10px;
@@ -448,10 +449,12 @@ kbd { background: var(--bg2); border: 1px solid var(--border); border-radius: 5p
     width: 100%; height: auto; flex-direction: row; align-items: center;
     padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
     border-right: none; border-top: 1px solid var(--border);
-    z-index: 100; background: rgba(21,26,34,.97); backdrop-filter: blur(8px);
+    z-index: 100; background: var(--bg2); backdrop-filter: blur(8px);
+    border-top: 1px solid var(--border); box-shadow: 0 -2px 14px rgba(0,0,0,.08);
   }
   .logo, .sidebar-foot { display: none; }
   nav { flex-direction: row; justify-content: space-around; flex: 1; gap: 2px; }
+  .nav-ico { width: 18px; height: 18px; }
   .nav-item { flex-direction: row; gap: 6px; padding: 8px 10px; font-size: 13px; }
   .nav-item.active::before { left: 25%; right: 25%; top: auto; bottom: auto; width: auto; height: 3px; top: -6px; }
   .nav-label { display: block; }

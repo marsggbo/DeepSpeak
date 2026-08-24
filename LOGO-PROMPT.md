@@ -1,65 +1,91 @@
-# DeepSpeak Logo 生成 Prompt
+# DeepSpeak Logo 生成 Prompt（v5 · 上下文式设计简报）
 
-> 用法：把「核心 Prompt」直接粘贴到 Midjourney / DALL-E / 即梦 / Flux 等图像生成工具，
-> 不满意可在「可调参数」里微调后重新生成。
+> 用法：把「五、给画图模型的完整 Prompt」整段复制到即梦 / Midjourney / DALL·E 等工具。
+> 前四节是背景与要求（帮助你理解与微调），模型只需要看第五节。
 
-## 一、品牌调性（先想清楚再生成）
+---
 
-- **名字**：DeepSpeak = Deep（深度学习 / 深海意象）+ Speak（开口说英语）
-- **产品**：AI 英语深度学习工具，核心学习法是「整段精听」——听写 → 红笔校对 → 跟读 → 脱稿复述
-- **气质**：专注、沉静、有深度的学习伙伴；全离线、本地优先、可信赖
-- **主色**：深海蓝（#0e1116 背景下的 #6c8cff 主色）+ 珊瑚橙（#ffb454 点缀，象征开口发声的活力）
+## 一、产品定位（先让设计者理解这是什么）
 
-## 二、核心 Prompt（首选，推荐先试这个）
+**DeepSpeak 是一款 AI 英语深度学习工具**，核心是"整段精听学习法"（尚雯婕法）：
+- 用户导入真实英语音频（新闻、对话、演讲）
+- 反复通听 → 逐句听写 → 红笔校对 → 跟读模仿 → 脱稿背诵
+- 系统用间隔复习让每一句变成长期记忆
+
+产品气质：**专注、沉静、有深度的学习伙伴**。本地优先、全离线、零 AI 依赖也能完整使用。
+名字含义：**Deep**（深度学习、潜入水中）+ **Speak**（开口说英语）。
+
+## 二、设计目标（Logo 要传达什么）
+
+1. 一眼看出品牌名 DeepSpeak → 用字母 **D** 和 **S** 直接构成图形
+2. 体现产品内核：**听（输入）与说（输出）的循环**——D 的圆环像耳朵/耳机（听），S 形曲线像声波（说）
+3. 传达"深"：深海蓝配色 + 下潜/水波的视觉联想
+4. 风格必须**极简、现代、有记忆点**，对标 DeepSeek / Notion 这类现代科技品牌的图标感，避免"古早"感（拟物、复杂渐变、多元素堆砌）
+
+## 三、视觉要求
+
+| 项 | 要求 |
+|---|---|
+| 构图 | 只由 D 与 S 两个字母的几何形构成，融为一体 |
+| 颜色 | 深海蓝单色渐变（#0e1116 深底 → #6c8cff 亮蓝），不出现其他色系 |
+| 风格 | 扁平、几何、负空间、矢量干净、大量留白 |
+| 比例 | 1:1 方形，适配 512×512 应用图标 |
+| 禁忌 | 不要画具象物体（耳朵、耳机、书本、麦克风）；不要写完整单词；不要加装饰边框 |
+
+## 四、三种构图方向（按推荐度排序）
+
+**A · D 环含 S 声波（均衡，首选）**
+D 的粗圆环（左竖右弧）内部横穿一条 S 形曲线，S 两端从 D 右侧开口伸出。
+→ D 像耳朵（听），S 像声波（说），听与说在一个符号里闭环。
+
+**B · S 主导 + D 负空间（动感）**
+一条连续的 S 形声波贯穿画面，S 的起点放大成圆点，圆点内负空间呈现字母 D。
+→ 声波（说）为主，D（深）藏在起点，强调"开口说"的行动感。
+
+**C · 声波切开 D（记忆点最强，生成难度高）**
+大写 D 的竖直笔画被一道 S 形声波从中切开并微微错位，形成开口说话的动感。
+→ 被切开 = 开口，D 的圆弧保留 = 耳朵。
+
+## 五、给画图模型的完整 Prompt
+
+### 首选（方向 A）
 
 ```
-App logo, flat vector style, a rounded speech bubble that forms the shape of
-an open book viewed from above, with a sound wave (voice waveform) flowing
-through the center of the bubble, deep ocean blue gradient background
-(#0e1116 to #1a2029), bright blue (#6c8cff) speech bubble with glowing
-coral-orange (#ffb454) waveform accent, minimal geometric design, subtle
-depth shadow, centered composition, clean edges, no text, no letters,
-suitable for app icon at 512x512, professional, modern, calm and focused mood
+请为英语学习应用 DeepSpeak 设计一个应用图标 logo，极简扁平矢量风格。
+
+构图要求：
+- 主体是字母 D 的粗圆环形状（左侧竖直、右侧圆弧），线条粗且圆润
+- 一条 S 形曲线横穿 D 圆环内部，S 的两端从 D 右侧的开口处延伸出来
+- S 的线条比 D 略细，与 D 形成"环中穿过一条波浪线"的构图
+- 整个图形只由这两个字母形状构成，融为一体
+
+颜色要求：
+- 深海蓝单色渐变：从深蓝 #0e1116 过渡到亮蓝 #6c8cff
+- 只使用这一个蓝色系，不要其他颜色
+
+风格要求：
+- 扁平、几何、负空间设计，大量留白
+- 矢量干净、边缘精确、现代科技教育品牌感
+- 无文字、无装饰元素、不要画耳朵/耳机/书本/麦克风等具象物体
+
+尺寸：1:1 方形应用图标
 ```
 
-要点：**对话气泡 × 打开的书 × 声波** 三个意象合一，没有文字（图标级）。
+### 备选（方向 B / C，任选一个方向词替换到上面的"构图要求"）
 
-## 三、备选方向（换一种风格试）
+```
+B 方向构图要求：
+- 一条连续的 S 形声波曲线横贯画面，波浪起伏明显
+- S 曲线的起点（左端）放大为一个实心圆点，圆点内部用负空间呈现字母 D 的形状
+- 整体只由这条 S 曲线和圆点构成
 
-**B 方案 · 耳机海洋**
-```
-Minimalist app icon, headphones formed like a deep sea wave, ocean blue
-gradient (#0e1116 → #6c8cff), waveform line inside the headband, flat design,
-negative space, no text, 512x512 app icon, calm and modern
-```
-
-**C 方案 · 字母标（D 与声波）**
-```
-App logo, capital letter D integrated with a sound waveform, the vertical
-stroke of D becomes a rising waveform, deep blue gradient background,
-bright accent line (#6c8cff and #ffb454), flat minimal vector, no other text,
-512x512 icon, professional tech education style
+C 方向构图要求：
+- 主体是粗线条的大写字母 D（左侧竖直、右侧圆弧）
+- 一道 S 形曲线从 D 的竖直笔画中间横向穿过，把竖线切开并让上下两段微微错位
+- 形成"字母被声音切开"的动感，D 的圆弧部分保持完整
 ```
 
-## 四、可调参数
+## 六、生成后处理
 
-| 参数 | 建议值 | 说明 |
-|---|---|---|
-| 风格 | flat vector / minimal / geometric | 不要拟真 3D，扁平图标最耐看 |
-| 配色 | 深蓝底 + #6c8cff 蓝 + #ffb454 橙点缀 | 和软件界面一致（暗色主题） |
-| 文字 | 无 | 图标内不放字，软件名放图标下方 |
-| 比例 | 1:1，512×512 | 应用图标标准 |
-| 情绪 | calm, focused, depth | 对应"深度学习"的沉静感 |
-
-## 五、生成后处理
-
-1. 若气泡/书本形态不够明显，把对应关键词提前（如 `open book speech bubble` 放最前面）
-2. 生成满意后让工具放大到 1024×1024，再裁出 512×512
-3. 替换位置：`frontend/index.html` 的 favicon（当前是 🎧 emoji）、`frontend/icons/`、Electron 打包图标、Capacitor 的 `android/android/app/src/main/res/mipmap-*`
-
-## 六、Prompt 设计思路（为什么这样写）
-
-- **意象三层**：气泡=开口说（Speak）、翻开的书=深度学习（Deep）、声波=语音与听力训练（精听法核心）
-- **深海蓝**：呼应 "Deep"，也是软件现有暗色主题的底色，logo 与界面天然统一
-- **珊瑚橙点缀**：与主蓝互补，表示"开口发声"的活力，同时是界面里「主动回忆/重点」的强调色
-- **无文字**：现代应用图标趋势，避免在小尺寸下糊成一团
+1. 生成 1024×1024，选最满意的一张裁成 512×512
+2. 发给我，替换三处：`frontend/icons/`（网页 favicon）、Electron 打包图标、安卓 `mipmap-*` 启动图标
