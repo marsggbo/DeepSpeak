@@ -57,6 +57,21 @@ async function api(path, opts) {
 /* ================= 工具 ================= */
 const $ = (sel, root) => (root || document).querySelector(sel);
 const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+
+// 探测是否有桌面后端（结果缓存）：true=网页/移动端本地引擎模式，false=桌面版
+let __localMode = null;
+async function isLocalMode() {
+  if (__localMode !== null) return __localMode;
+  try {
+    const res = await fetch("/api/health", { method: "GET", cache: "no-store" });
+    if (!res.ok) throw new Error("no backend");
+    if (!(res.headers.get("content-type") || "").includes("application/json")) throw new Error("not json");
+    __localMode = false;
+  } catch (e) {
+    __localMode = true;
+  }
+  return __localMode;
+}
 const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -707,9 +722,19 @@ function importModal() {
   `);
   $("#modal-x").addEventListener("click", closeModal);
   const body = $("#import-body");
+  const localOnlyNotice = (feature, why) => `
+    <div class="card" style="margin-top:10px;border-color:rgba(255,180,60,.45);background:rgba(255,180,60,.06)">
+      <div style="font-weight:600;margin-bottom:6px">⚠️ ${feature}仅桌面版可用</div>
+      <div style="font-size:13px;color:var(--muted);line-height:1.7">${why}（桌面版用本机 faster-whisper 转写、Kokoro 合成，数据不出电脑）。<br>网页版 / 手机 APK 只能练习内置材料，请在 macOS 或 Windows 桌面版中导入。</div>
+    </div>`;
   const show = async (tab) => {
+    const local = await isLocalMode();
     $$(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === tab));
     if (tab === "file") {
+      if (local) {
+        body.innerHTML = localOnlyNotice("本地文件导入", "音频 / 视频 / 字幕文件需要先在本机转写成训练单元");
+        return;
+      }
       body.innerHTML = `
         <div class="dropzone" id="dropzone">📁 点击选择或拖入文件<br><span style="font-size:12px">音频 MP3/M4A/WAV… 视频 MP4/MOV… 字幕 SRT/VTT… 文本 TXT</span></div>
         <input type="file" id="file-input" class="hidden" accept=".mp3,.m4a,.wav,.aiff,.flac,.mp4,.mov,.mkv,.srt,.vtt,.txt,.webm,.aac,.ogg">
@@ -725,6 +750,10 @@ function importModal() {
       });
       fi.addEventListener("change", () => { if (fi.files.length) uploadFile(fi.files[0]); });
     } else if (tab === "url") {
+      if (local) {
+        body.innerHTML = localOnlyNotice("URL / RSS 导入", "YouTube、播客 RSS、网页文章等链接需要下载音频后在本机转写，浏览器只能实时识别麦克风、无法转写音频文件");
+        return;
+      }
       body.innerHTML = `
         <label class="field">粘贴链接（YouTube / Podcast RSS / 网页文章 / 音频直链）</label>
         <input class="input" id="url-input" placeholder="https://…" style="margin-bottom:10px">
@@ -755,6 +784,10 @@ function importModal() {
       });
       $("#url-input").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#url-go").click(); });
     } else {
+      if (local) {
+        body.innerHTML = localOnlyNotice("粘贴文本导入", "文本需要先在本机合成语音（TTS）生成每句音频，才能进入听写 / 跟读训练");
+        return;
+      }
       body.innerHTML = `
         <label class="field">标题（可选）</label>
         <input class="input" id="txt-title" placeholder="例如：The Convo Starters - Episode 12" style="margin-bottom:10px">

@@ -1025,6 +1025,9 @@ const DeepSpeakEngine = (() => {
       return { ok: true };
     }
     // ---- 材料 ----
+    if (p === "/materials" && method === "POST") {
+      throw new Error("导入材料仅在桌面版可用（本模式为离线内置材料）");
+    }
     if (p === "/materials" && method === "GET") {
       const out = S.materials.map((mat) => {
         const units = getUnits(mat.id);
