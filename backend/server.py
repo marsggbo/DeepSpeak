@@ -234,6 +234,96 @@ def _continue_focus_json():
     return None
 
 
+def _learner_profile():
+    """学习画像：把散落各表的学习历史聚合成结构化画像 + 一段可直接喂给 LLM 的中文总结。
+
+    供统计页「AI 分析」与 AI 生成材料（参考画像）使用；引擎本地模式有同构实现（engine.js）。
+    """
+    def one(sql, args=()):
+        r = db.query_one(sql, args)
+        return r[0] if r else 0
+
+    def avg(sql, args=()):
+        r = db.query_one(sql, args)
+        return r[0] if r else 0
+
+    def pct(a, b):
+        return round(a * 100 / b) if b else 0
+
+    # 听写 / 整段听写
+    dict_total = one("SELECT COUNT(*) c FROM answers WHERE kind='dictation'")
+    dict_passed = one("SELECT COUNT(*) c FROM answers WHERE kind='dictation' AND passed=1")
+    dict_avg_wer = avg("SELECT AVG(wer) w FROM answers WHERE kind='dictation' AND wer IS NOT NULL") or 0
+    focus_total = one("SELECT COUNT(*) c FROM focus_dictations")
+    focus_avg_wer = avg("SELECT AVG(overall_wer) w FROM focus_dictations") or 0
+    # 薄弱句：整段听写里逐句准确率 ≤60% 的句子（detail_json 为 [{text, correct, total}]）
+    weak_sentences = []
+    for r in db.query("SELECT detail_json FROM focus_dictations WHERE detail_json IS NOT NULL AND detail_json != ''"):
+        try:
+            items = json.loads(r["detail_json"])
+        except Exception:
+            continue
+        for it in items or []:
+            tot = it.get("total") or 0
+            cor = it.get("correct") or 0
+            if tot >= 3 and cor / tot <= 0.6 and it.get("text"):
+                weak_sentences.append({"text": str(it["text"])[:120], "acc": round(cor / tot, 2)})
+    weak_sentences = sorted(weak_sentences, key=lambda x: x["acc"])[:8]
+    # 口语 / 主动回忆
+    speak_total = one("SELECT COUNT(*) c FROM speaking_attempts")
+    speak_passed = one("SELECT COUNT(*) c FROM speaking_attempts WHERE passed=1")
+    speak_avg = avg("SELECT AVG(match_score) s FROM speaking_attempts WHERE match_score IS NOT NULL") or 0
+    recall_total = one("SELECT COUNT(*) c FROM speaking_attempts WHERE kind='active_recall'")
+    recall_passed = one("SELECT COUNT(*) c FROM speaking_attempts WHERE kind='active_recall' AND passed=1")
+    # 复习 / 生词 / 打卡
+    review_total = one("SELECT COUNT(*) c FROM review_history")
+    word_total = one("SELECT COUNT(*) c FROM words")
+    checkin_total = one("SELECT COUNT(*) c FROM checkins")
+    dates = {r["date"] for r in db.query("SELECT date FROM checkins")}
+    streak = 0
+    d = datetime.date.today()
+    while d.isoformat() in dates:
+        streak += 1
+        d -= datetime.timedelta(days=1)
+    # 材料 / 单元
+    unit_total = one("SELECT COUNT(*) c FROM training_units")
+    unit_mastered = one("SELECT COUNT(*) c FROM training_units WHERE status='MASTERED'")
+    mat_total = one("SELECT COUNT(*) c FROM materials")
+    active_mats = one(
+        """SELECT COUNT(*) c FROM material_focus WHERE status IN
+           ('listening','dictation','shadowing','offscript','review_due')""")
+    weak_scenes = review.weak_scenes()
+
+    profile = {
+        "materials": {"total": mat_total, "units": unit_total, "mastered": unit_mastered, "active": active_mats},
+        "dictation": {"total": dict_total, "passed": dict_passed, "pass_rate": pct(dict_passed, dict_total),
+                      "avg_wer": round(dict_avg_wer, 3)},
+        "focus_dictation": {"total": focus_total, "avg_wer": round(focus_avg_wer, 3)},
+        "weak_sentences": weak_sentences,
+        "speaking": {"total": speak_total, "passed": speak_passed, "pass_rate": pct(speak_passed, speak_total),
+                     "avg_score": round(speak_avg)},
+        "recall": {"total": recall_total, "passed": recall_passed, "pass_rate": pct(recall_passed, recall_total)},
+        "review": {"total": review_total},
+        "words": {"total": word_total},
+        "checkins": {"total": checkin_total, "streak": streak},
+        "weak_scenes": weak_scenes,
+    }
+    lines = [
+        f"累计：材料 {mat_total} 个，句子 {unit_total} 句（已掌握 {unit_mastered}，进行中 {active_mats} 个材料）。",
+        f"听写：共 {dict_total} 次，通过率 {pct(dict_passed, dict_total)}%，平均词错率 {round(dict_avg_wer * 100)}%；"
+        f"整段听写 {focus_total} 次，平均准确率 {round((1 - focus_avg_wer) * 100)}%。",
+        f"口语：共 {speak_total} 次，通过率 {pct(speak_passed, speak_total)}%，平均匹配分 {round(speak_avg)}；"
+        f"其中主动回忆 {recall_total} 次（通过率 {pct(recall_passed, recall_total)}%）。",
+        f"复习：共完成 {review_total} 次。生词本收藏 {word_total} 个。打卡 {checkin_total} 天，当前连续 {streak} 天。",
+    ]
+    if weak_sentences:
+        lines.append("薄弱句（整段听写准确率≤60%）：" +
+                     "；".join(f"「{w['text']}」({w['acc'] * 100:.0f}%)" for w in weak_sentences[:5]))
+    if weak_scenes:
+        lines.append("薄弱场景：" + "、".join(f"{w['label']}（{w['avg_mastery']:.2f}分）" for w in weak_scenes))
+    return {"profile": profile, "summary": "\n".join(lines)}
+
+
 def _focus_card(row):
     has = "dict_done" in row.keys()  # LEFT JOIN 推荐行没有完整进度列
     steps = {
@@ -293,7 +383,13 @@ def api_router(handler):
 
     # ---------- 材料 ----------
     if path == "/api/materials" and method == "GET":
-        mats = db.query("SELECT * FROM materials ORDER BY is_builtin DESC, id DESC")
+        # 排序白名单：time_desc（默认，最近导入）/ time_asc（最早导入）/ old（内置优先旧序）
+        sort = (handler.query.get("sort") or [""])[0]
+        order = {
+            "time_asc": "is_builtin DESC, created_at ASC, id ASC",
+            "old": "is_builtin DESC, id DESC",
+        }.get(sort, "is_builtin DESC, created_at DESC, id DESC")
+        mats = db.query(f"SELECT * FROM materials ORDER BY {order}")
         out = []
         for m in mats:
             d = dict(m)
@@ -459,17 +555,18 @@ def api_router(handler):
                 return _err(handler, f"AI 调用失败: {e}", 502)
             return _ok(handler, {"found": False, "kind": "word", "word": text, "pos": "", "meaning": ""})
         if kind == "sentence":
-            # 句子翻译：免费层无离线模型，需用户配置的 LLM（Ollama/OpenAI 兼容均可）
+            # 句子通俗解释：需用户配置的 LLM（Ollama/OpenAI 兼容均可）；支持自定义提示词
             provider = _require_ai(handler)
             if provider is None:
                 return
             try:
-                zh = ai_mod.llm_translate_sentence(provider, text)
+                custom = db.get_setting("llm_explain_prompt", "")
+                r = ai_mod.llm_explain_sentence(provider, text, custom)
             except Exception as e:
                 return _err(handler, f"AI 调用失败: {e}", 502)
-            if not zh:
-                return _err(handler, "AI 未返回翻译，请重试")
-            return _ok(handler, {"found": True, "kind": "sentence", "translation_zh": zh, "source": "llm"})
+            if not r["translation_zh"] and not r["explanation_zh"]:
+                return _err(handler, "AI 未返回内容，请重试")
+            return _ok(handler, {"found": True, "kind": "sentence", **r, "source": "llm"})
         return _err(handler, "不支持的 kind")
 
     # ---------- 生词词组（words） ----------
@@ -714,6 +811,9 @@ def api_router(handler):
     # ---------- AI 生成材料 ----------
     if path == "/api/materials/generate" and method == "POST":
         body = _body_json(handler)
+        # 「参考我的学习画像」：把聚合画像塞进生成 prompt，让对话更贴合薄弱环节
+        if body.get("use_profile"):
+            body["profile_summary"] = _learner_profile()["summary"]
         # 先建一条 processing 材料占位（LLM 失败时置 error），再后台生成
         mid = db.execute(
             """INSERT INTO materials(title, description, media_type, language, status)
@@ -964,7 +1064,10 @@ def api_router(handler):
             p["has_key"] = bool(ai_mod.load_api_key(p["id"]))
             p["available"] = ai_mod.provider_ok(p)
             provs.append(p)
-        return _ok(handler, {"providers": provs, "presets": ai_mod.PROVIDER_PRESETS})
+        return _ok(handler, {
+            "providers": provs, "presets": ai_mod.PROVIDER_PRESETS,
+            "platforms": ai_mod.PLATFORM_PRESETS,
+        })
 
     if path == "/api/ai/providers" and method == "POST":
         body = _body_json(handler)
@@ -1025,12 +1128,10 @@ def api_router(handler):
         if action == "grant":
             db.set_setting("ai_consent_granted_at", str(time.time()))
             return _ok(handler, {"ok": True})
-        if action == "allow":
-            db.set_setting("ai_consent", "allow")
-            db.set_setting("ai_consent_granted_at", str(time.time()))
-            return _ok(handler, {"ok": True})
-        if action == "never":
-            db.set_setting("ai_consent", "never")
+        if action in ("allow", "ask", "never"):
+            db.set_setting("ai_consent", action)
+            if action != "never":
+                db.set_setting("ai_consent_granted_at", str(time.time()))
             return _ok(handler, {"ok": True})
         return _err(handler, "未知操作")
 
@@ -1040,6 +1141,25 @@ def api_router(handler):
             "scope": db.get_setting("ai_scope", "sentence"),
             "granted": db.get_setting("ai_consent_granted_at", ""),
         })
+
+    # ---------- 学习画像 & AI 分析 ----------
+    if path == "/api/learner/profile" and method == "GET":
+        return _ok(handler, _learner_profile())
+
+    if path == "/api/ai/analysis" and method == "POST":
+        provider = _require_ai(handler)
+        if provider is None:
+            return
+        body = _body_json(handler)
+        prof = _learner_profile()
+        payload = prof["summary"] + "\n\n（结构化画像：\n" + json.dumps(prof["profile"], ensure_ascii=False) + "）"
+        try:
+            reply = ai_mod.llm_analyze_learner(provider, payload, (body.get("prompt") or "").strip())
+        except Exception as e:
+            return _err(handler, f"AI 调用失败: {e}", 502)
+        if not reply:
+            return _err(handler, "AI 未返回内容，请重试")
+        return _ok(handler, {"reply": reply})
 
     # ---------- 语音 ----------
     if path == "/api/speech/transcribe" and method == "POST":

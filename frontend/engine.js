@@ -323,6 +323,7 @@ const DeepSpeakEngine = (() => {
       focus_dictations: [], // {material_id, overall_wer, correct_words, total_words, sentence_count, detail_json, created_at}
       checkins: [], // ["YYYY-MM-DD"]
       settings: {}, // {key: value}
+      providers: [], // [{id, name, provider_type, base_url, model, api_key, enabled, created_at}]
       seq: { word: 0, session: 0 },
     };
   }
@@ -502,6 +503,7 @@ const DeepSpeakEngine = (() => {
     tts_voice_a: "Samantha", tts_voice_b: "Daniel", tts_rate: "175",
     dictation_pass_wer: "0.12", speaking_pass_score: "60", recall_pass_score: "60",
     ai_consent: "ask", ai_scope: "sentence", focus_free_nav: "0",
+    llm_explain_prompt: "",
   };
   function allSettings() { return { ...SETTING_DEFAULTS, ...S.settings }; }
 
@@ -1087,6 +1089,161 @@ const DeepSpeakEngine = (() => {
     return null;
   }
 
+  // ================= 本地 AI Provider（可选增强；配置仅存本机浏览器） =================
+  // 与后端 ai.py 的 PLATFORM_PRESETS 同构：设置页「常用平台」chips 一键填充
+  const LOCAL_PLATFORMS = [
+    { name: "OpenAI", type: "openai", base_url: "https://api.openai.com/v1", models: ["gpt-4o-mini", "gpt-4o"] },
+    { name: "DeepSeek", type: "openai_compatible", base_url: "https://api.deepseek.com/v1", models: ["deepseek-chat", "deepseek-reasoner"] },
+    { name: "OpenRouter", type: "openai_compatible", base_url: "https://openrouter.ai/api/v1", models: ["openai/gpt-4o-mini", "deepseek/deepseek-chat"] },
+    { name: "Moonshot Kimi", type: "openai_compatible", base_url: "https://api.moonshot.cn/v1", models: ["moonshot-v1-8k", "moonshot-v1-32k"] },
+    { name: "智谱 GLM", type: "openai_compatible", base_url: "https://open.bigmodel.cn/api/paas/v4", models: ["glm-4-flash", "glm-4-air"] },
+    { name: "通义千问", type: "openai_compatible", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", models: ["qwen-turbo", "qwen-plus"] },
+    { name: "Groq", type: "openai_compatible", base_url: "https://api.groq.com/openai/v1", models: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"] },
+    { name: "Ollama（本地）", type: "ollama", base_url: "http://localhost:11434/v1", models: ["qwen2.5", "llama3.1"] },
+  ];
+  if (typeof window !== "undefined") window.dsPlatforms = LOCAL_PLATFORMS;
+
+  function providerOk(p) {
+    if (!p) return false;
+    if (p.provider_type === "ollama") return true;
+    if (p.provider_type === "openai_compatible") return !!p.base_url;
+    return !!p.api_key;
+  }
+  function enabledProvider() {
+    return (S.providers || []).find((p) => p.enabled && providerOk(p)) || null;
+  }
+  function nextProviderId() {
+    S.seq.provider = (S.seq.provider || 0) + 1;
+    return S.seq.provider;
+  }
+  function parseLLMJson(text) {
+    if (!text) return null;
+    let t = String(text).trim();
+    let m = t.match(/```(?:json)?\s*(\{.*?\})\s*```/s);
+    if (m) t = m[1];
+    else { m = t.match(/\{.*\}/s); if (m) t = m[0]; }
+    try { return JSON.parse(t); } catch (e) {
+      try { return JSON.parse(t.replace(/,\s*([}\]])/g, "$1")); } catch (e2) { return null; }
+    }
+  }
+  // 与后端 ai.py chat() 同构：OpenAI 兼容 / Anthropic / Gemini 三派发；配置仅存本机
+  async function llmChatWith(p, messages, opts) {
+    if (!p) throw new Error("没有可用的 AI Provider：请到 设置 → AI Provider 配置一个（OpenAI 兼容 / Ollama 等均可）");
+    const base = (p.base_url || "").replace(/\/+$/, "");
+    const model = p.model || "";
+    const key = p.api_key || "";
+    const temperature = opts && opts.temperature !== undefined ? opts.temperature : 0.3;
+    const max_tokens = (opts && opts.max_tokens) || 1500;
+    const jsonMode = !opts || opts.json_mode !== false;
+    let url, headers = { "content-type": "application/json" }, body;
+    if (p.provider_type === "anthropic") {
+      url = base + "/v1/messages";
+      headers["x-api-key"] = key;
+      headers["anthropic-version"] = "2023-06-01";
+      body = { model, max_tokens, messages };
+      if (!jsonMode) body.temperature = temperature;
+    } else if (p.provider_type === "gemini") {
+      url = `${base}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+      body = {
+        contents: messages.map((m) => ({ role: m.role === "user" ? "user" : "model", parts: [{ text: m.content }] })),
+        generationConfig: { temperature, maxOutputTokens: max_tokens },
+      };
+    } else {
+      url = base + "/chat/completions";
+      if (key) headers["authorization"] = "Bearer " + key;
+      body = { model, messages, temperature, max_tokens };
+      if (jsonMode) body.response_format = { type: "json_object" };
+    }
+    let res;
+    try {
+      res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+    } catch (e) {
+      throw new Error("无法连接 " + base + "：" + ((e && e.message) || e));
+    }
+    if (!res.ok) {
+      let detail = "";
+      try { detail = (await res.text()).slice(0, 300); } catch (e) { /* ignore */ }
+      throw new Error(`AI Provider 返回 ${res.status}：${detail}`);
+    }
+    let data;
+    try { data = await res.json(); } catch (e) { throw new Error("AI Provider 返回了无法解析的内容"); }
+    if (p.provider_type === "anthropic") {
+      return (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
+    }
+    if (p.provider_type === "gemini") {
+      try { return data.candidates[0].content.parts[0].text; }
+      catch (e) { throw new Error("Gemini 返回格式异常"); }
+    }
+    return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
+  }
+  async function llmChat(messages, opts) { return llmChatWith(enabledProvider(), messages, opts); }
+
+  // 学习画像（对齐 server.py _learner_profile；统计页「AI 分析」与 AI 生成参考共用）
+  function localLearnerProfile() {
+    const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+    const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
+    const dicts = S.answers.filter((a) => a.kind === "dictation");
+    const dictPassed = dicts.filter((a) => a.passed).length;
+    const dictWers = dicts.map((a) => a.wer).filter((v) => v !== undefined && v !== null);
+    const fdicts = S.focus_dictations || [];
+    const fwers = fdicts.map((f) => f.overall_wer).filter((v) => v !== undefined && v !== null);
+    const weak = [];
+    for (const f of fdicts) {
+      let items = [];
+      try { items = f.detail_json ? (typeof f.detail_json === "string" ? JSON.parse(f.detail_json) : f.detail_json) : []; } catch (e) { /* ignore */ }
+      for (const it of items || []) {
+        const tot = it.total || 0, cor = it.correct || 0;
+        if (tot >= 3 && cor / tot <= 0.6 && it.text) {
+          weak.push({ text: String(it.text).slice(0, 120), acc: Math.round((cor / tot) * 100) });
+        }
+      }
+    }
+    weak.sort((a, b) => a.acc - b.acc);
+    const speaks = S.speaking_attempts || [];
+    const speakPassed = speaks.filter((s) => s.passed).length;
+    const scores = speaks.map((s) => s.match_score).filter((v) => typeof v === "number");
+    const recalls = speaks.filter((s) => s.kind === "active_recall");
+    const recallPassed = recalls.filter((s) => s.passed).length;
+    let totalUnits = 0, masteredUnits = 0;
+    for (const units of Object.values(S.units)) {
+      totalUnits += units.length;
+      masteredUnits += units.filter((u) => u.status === "MASTERED").length;
+    }
+    const activeMats = S.materials.filter((m) => {
+      const f = getFocus(m.id).status;
+      const done = getUnits(m.id).filter((u) => ["REVIEW_DUE", "MASTERED"].includes(u.status)).length;
+      return ["listening", "dictation", "shadowing", "offscript", "review_due"].includes(f) || done > 0;
+    });
+    let streak = 0;
+    const d = new Date();
+    while (S.checkins.includes(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`)) {
+      streak += 1;
+      d.setDate(d.getDate() - 1);
+    }
+    const profile = {
+      materials: { total: S.materials.length, units: totalUnits, mastered: masteredUnits, active: activeMats.length },
+      dictation: { total: dicts.length, passed: dictPassed, pass_rate: pct(dictPassed, dicts.length), avg_wer: Math.round(avg(dictWers) * 1000) / 1000 },
+      focus_dictation: { total: fdicts.length, avg_wer: Math.round(avg(fwers) * 1000) / 1000 },
+      weak_sentences: weak.slice(0, 8),
+      speaking: { total: speaks.length, passed: speakPassed, pass_rate: pct(speakPassed, speaks.length), avg_score: Math.round(avg(scores)) },
+      recall: { total: recalls.length, passed: recallPassed, pass_rate: pct(recallPassed, recalls.length) },
+      review: { total: S.review_history.length },
+      words: { total: S.words.length },
+      checkins: { total: S.checkins.length, streak },
+      weak_scenes: weakScenes(),
+    };
+    const lines = [
+      `累计：材料 ${profile.materials.total} 个，句子 ${totalUnits} 句（已掌握 ${masteredUnits}，进行中 ${activeMats.length} 个材料）。`,
+      `听写：共 ${dicts.length} 次，通过率 ${pct(dictPassed, dicts.length)}%，平均词错率 ${Math.round(avg(dictWers) * 100)}%；整段听写 ${fdicts.length} 次，平均准确率 ${Math.round((1 - avg(fwers)) * 100)}%。`,
+      `口语：共 ${speaks.length} 次，通过率 ${pct(speakPassed, speaks.length)}%，平均匹配分 ${Math.round(avg(scores))}；其中主动回忆 ${recalls.length} 次（通过率 ${pct(recallPassed, recalls.length)}%）。`,
+      `复习：共完成 ${S.review_history.length} 次。生词本收藏 ${S.words.length} 个。打卡 ${S.checkins.length} 天，当前连续 ${streak} 天。`,
+    ];
+    if (weak.length) lines.push("薄弱句（整段听写准确率≤60%）：" + weak.slice(0, 5).map((w) => `「${w.text}」(${w.acc}%)`).join("；"));
+    const ws = weakScenes();
+    if (ws && ws.length) lines.push("薄弱场景：" + ws.map((w) => `${w.label}（${w.avg_mastery}分）`).join("、"));
+    return { profile, summary: lines.join("\n") };
+  }
+
   // ================= 路由分发 =================
   async function api(method, path, body) {
     await loadState();
@@ -1102,7 +1259,7 @@ const DeepSpeakEngine = (() => {
         ok: true, version: "local", asr_available: webAsr,
         asr_engine: webAsr ? "web" : null, asr_error: webAsr ? "" : "浏览器不支持 Web Speech API",
         tts_available: "speechSynthesis" in window, tts_engine: "browser",
-        ai_provider: false, platform: "browser",
+        ai_provider: !!enabledProvider(), platform: "browser",
       };
     }
     // ---- 点词释义（对齐后端 /api/explain；句子翻译在网页版无 LLM 不可用） ----
@@ -1140,8 +1297,39 @@ const DeepSpeakEngine = (() => {
         const word = (text.split(/\s+/)[0] || text).toLowerCase();
         return { ok: true, found: false, kind: "word", word, pos: "", meaning: "" };
       }
-      // sentence：网页版无 LLM，返回可读提示（explainer 会 toast）
-      throw new Error("句子翻译需要 AI Provider，请在桌面版配置（网页版可双击单词免费查词）");
+      // sentence：通俗解释（翻译 + 有趣讲解 + 例子），支持自定义提示词（设置 llm_explain_prompt，{text} 占位）
+      const custom = getSetting("llm_explain_prompt", "").trim();
+      let out;
+      try {
+        if (custom) {
+          const user = custom.includes("{text}") ? custom.replace(/\{text\}/g, text) : custom + "\n\n句子：" + text;
+          out = await llmChat([
+            { role: "system", content: "你是一位英语学习助手，用简体中文、轻松有趣的方式回答。" },
+            { role: "user", content: user },
+          ], { json_mode: false, temperature: 0.4 });
+          out = String(out || "").trim();
+          if (!out) throw new Error("AI 未返回内容，请重试");
+          return { ok: true, found: true, kind: "sentence", translation_zh: "", explanation_zh: out, examples: [], source: "llm" };
+        }
+        out = await llmChat([
+          { role: "system", content: "You are an English learning assistant for a Chinese learner. Answer in simplified Chinese, keep it fun and easy to understand. Return ONLY valid JSON matching the requested schema." },
+          { role: "user", content: JSON.stringify({
+            task: "用轻松、有趣、通俗的方式给一位中国英语学习者讲解这句英语。",
+            sentence: text,
+            output_schema: {
+              translation_zh: "口语化中文翻译（不出现英文）",
+              explanation_zh: "通俗有趣的讲解（80 字内）：这句话什么场景用、结构或地道之处、容易听错/用错的地方",
+              examples: [{ en: "同类情景下的自然说法（英文）", zh: "中文" }],
+            },
+            rule: "Max 2 examples. Use simplified Chinese. explanation must be fun and easy to understand, avoid jargon.",
+          }) },
+        ], { temperature: 0.4 });
+        const data = parseLLMJson(out) || {};
+        if (!data.translation_zh && !data.explanation_zh) throw new Error("AI 未返回内容，请重试");
+        return { ok: true, found: true, kind: "sentence", translation_zh: data.translation_zh || "", explanation_zh: data.explanation_zh || "", examples: data.examples || [], source: "llm" };
+      } catch (e) {
+        throw new Error(e && e.message ? e.message : String(e));
+      }
     }
     // ---- 今日 ----
     if (p === "/today" && method === "GET") {
@@ -1169,7 +1357,8 @@ const DeepSpeakEngine = (() => {
       return { ok: true };
     }
     // ---- 材料 ----
-    if (p === "/materials" && method === "GET") {
+    if (method === "GET" && (p === "/materials" || p.startsWith("/materials?"))) {
+      const sort = new URLSearchParams((p.split("?")[1] || "")).get("sort") || "time_desc";
       const out = S.materials.map((mat) => {
         const units = getUnits(mat.id);
         const done = units.filter((u) => ["REVIEW_DUE", "MASTERED"].includes(u.status)).length;
@@ -1182,6 +1371,13 @@ const DeepSpeakEngine = (() => {
           unit_total: units.length, unit_done: done, unit_mastered: mastered,
           focus_status: getFocus(mat.id).status,
         };
+      });
+      // 内置材料固定置顶，其余按 created_at 排序（对齐后端 is_builtin DESC + created_at；old = 导入顺序）
+      const key = (m) => String(m.created_at || "");
+      out.sort((a, b) => {
+        if (a.is_builtin !== b.is_builtin) return a.is_builtin ? -1 : 1;
+        if (sort === "old") return b.id - a.id;
+        return sort === "time_asc" ? key(a).localeCompare(key(b)) : key(b).localeCompare(key(a));
       });
       return { ok: true, materials: out };
     }
@@ -1458,7 +1654,27 @@ const DeepSpeakEngine = (() => {
       return { ok: true, ...r };
     }
     m = p.match(/^\/units\/(\d+)\/(enhance|recall-hint|alternatives)$/);
-    if (m) throw new Error("AI 增强仅在配置了 API Key 的桌面版可用");
+    if (m && method === "POST") {
+      if (m[2] === "recall-hint") {
+        // 主动回忆的中文回译提示（对齐 server.py + ai_mod.llm_translate_sentence）
+        const u = getUnit(Number(m[1]));
+        if (!u) throw new Error("单元不存在");
+        const out = await llmChat([
+          { role: "system", content: "You are an English learning assistant for a Chinese learner. Answer in simplified Chinese. Return ONLY valid JSON matching the requested schema." },
+          { role: "user", content: JSON.stringify({
+            task: "Translate this English sentence into natural, everyday Chinese. The learner will translate it back into English as a recall exercise.",
+            sentence: u.text,
+            output_schema: { translation_zh: "中文翻译（口语化，忠实原意，不出现任何英文单词）" },
+            rule: "Do not include the original English sentence or any English words in translation_zh.",
+          }) },
+        ]);
+        const data = parseLLMJson(out) || {};
+        const zh = String(data.translation_zh || "").trim();
+        if (!zh) throw new Error("AI 未返回翻译，请重试");
+        return { ok: true, translation_zh: zh };
+      }
+      throw new Error("该 AI 增强功能仅在桌面版可用（网页版可用「🤖 通俗解释」与 AI 分析）");
+    }
     m = p.match(/^\/units\/(\d+)$/);
     if (m && method === "PUT") {
       const uid = Number(m[1]);
@@ -1532,20 +1748,78 @@ const DeepSpeakEngine = (() => {
     if (p === "/stats" && method === "GET") {
       return { ok: true, ...computeStats() };
     }
-    // ---- AI / 语音：离线模式不可用（返回空态，设置页可正常渲染） ----
+    // ---- AI Provider（本地：配置仅存本机浏览器；LLM 请求直接发往你填的地址） ----
     if (p === "/ai/providers" && method === "GET") {
-      return { ok: true, providers: [], presets: [] };
+      const provs = (S.providers || []).map((x) => ({
+        id: x.id, name: x.name, provider_type: x.provider_type,
+        base_url: x.base_url, model: x.model, enabled: x.enabled,
+        has_key: !!x.api_key, available: providerOk(x),
+      }));
+      return { ok: true, providers: provs, presets: {}, platforms: LOCAL_PLATFORMS };
     }
     if (p === "/ai/providers" && method === "POST") {
-      throw new Error("AI 功能仅在桌面版可用（配置 API Key 后启用）");
+      const name = String(b.name || "").trim();
+      if (!name) throw new Error("请填写名称");
+      const id = nextProviderId();
+      (S.providers = S.providers || []).push({
+        id, name, provider_type: b.provider_type || "openai_compatible",
+        base_url: String(b.base_url || "").trim(), model: String(b.model || "").trim(),
+        api_key: String(b.api_key || "").trim(), enabled: b.enabled ? 1 : 0,
+        created_at: nowStr(),
+      });
+      await save();
+      return { ok: true, id };
     }
-    if (p === "/ai/privacy" && method === "GET") {
-      return { ok: true, consent: "never", scope: "sentence", granted: "" };
-    }
-    if (p === "/ai/consent" && method === "POST") {
+    m = p.match(/^\/ai\/providers\/(\d+)$/);
+    if (m && method === "PUT") {
+      const pr = (S.providers || []).find((x) => x.id === Number(m[1]));
+      if (pr) {
+        for (const k of ["name", "provider_type", "base_url", "model"]) {
+          if (k in b) pr[k] = String(b[k] || "").trim();
+        }
+        if ("enabled" in b) pr.enabled = b.enabled ? 1 : 0;
+        if (b.api_key) pr.api_key = String(b.api_key).trim();
+        await save();
+      }
       return { ok: true };
     }
-    if (p.startsWith("/ai/")) throw new Error("AI 功能仅在桌面版可用");
+    if (m && method === "DELETE") {
+      S.providers = (S.providers || []).filter((x) => x.id !== Number(m[1]));
+      await save();
+      return { ok: true };
+    }
+    if (p === "/ai/test" && method === "POST") {
+      const pr = (S.providers || []).find((x) => x.id === Number(b.provider_id || 0));
+      if (!pr) throw new Error("Provider 不存在");
+      const reply = await llmChatWith(pr, [
+        { role: "system", content: "Reply with exactly: pong" },
+        { role: "user", content: "ping" },
+      ], { max_tokens: 10, json_mode: false });
+      return { ok: true, reply: String(reply || "").trim().slice(0, 50) || "pong" };
+    }
+    if (p === "/ai/privacy" && method === "GET") {
+      return { ok: true, consent: getSetting("ai_consent", "ask"), scope: getSetting("ai_scope", "sentence"), granted: "" };
+    }
+    if (p === "/ai/consent" && method === "POST") {
+      if (["allow", "ask", "never"].includes(b.action)) setSetting("ai_consent", b.action);
+      await save();
+      return { ok: true };
+    }
+    // ---- 学习画像 & AI 分析（对齐 server.py） ----
+    if (p === "/learner/profile" && method === "GET") {
+      return { ok: true, ...localLearnerProfile() };
+    }
+    if (p === "/ai/analysis" && method === "POST") {
+      const prof = localLearnerProfile();
+      const custom = String(b.prompt || "").trim();
+      const request = custom || "请根据我的学习画像，指出 3 个最需要改进的地方，并给出具体可执行的建议（中文，300 字以内）。";
+      const out = await llmChat([
+        { role: "system", content: "你是一位懂英语学习法的 AI 教练，用简体中文、简洁务实地回复，不要用术语。" },
+        { role: "user", content: "【我的学习画像】\n" + prof.summary + "\n\n【要求】\n" + request },
+      ], { json_mode: false, temperature: 0.5 });
+      if (!String(out || "").trim()) throw new Error("AI 未返回内容，请重试");
+      return { ok: true, reply: String(out).trim() };
+    }
     if (p.startsWith("/speech/")) throw new Error("语音识别仅在桌面版可用（可安装本地 faster-whisper）");
     if (p === "/tts/voices") {
       return { ok: true, voices: window.dsTts ? window.dsTts.listVoices() : [] };

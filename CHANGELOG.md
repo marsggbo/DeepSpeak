@@ -6,6 +6,22 @@ DeepSpeak 变更记录。格式基于 [Keep a Changelog](https://keepachangelog.
 ## [Unreleased]
 
 ### 新增
+- **AI Provider 常见平台一键填充**：设置页新增「常用平台」chips（OpenAI / DeepSeek / OpenRouter / Moonshot Kimi / 智谱 GLM / 通义千问 / Groq / Ollama），点击自动填好类型、Base URL、模型，只需再粘 API Key（网页/APK 与桌面版一致）
+- **通俗解释 🤖 按钮**：整段精听红笔校对（展开原文）、逐句强化的对照理解 / 复习对照 / 跟读 / 主动回忆（看原文）旁新增「🤖 通俗解释」，点击即让 LLM 给出中文翻译 + 通俗有趣的讲解 + 同类例句；提示词可在「设置 → AI 解释提示词」自定义（{text} 占位原句，留空用内置模板）
+- **学习画像（历史学习记录沉淀 + LLM 定制化）**：
+  - 系统自动从历史记录聚合结构化画像：听写/跟读/回忆通过率与词错率、反复听错的弱句（错误类型）、弱场景、生词量、复习与打卡节奏——桌面与本地模式双实现（`GET /api/learner/profile`）
+  - 统计页新增「学习画像」卡：画像摘要 + 「🤖 让 AI 分析我的薄弱点」一键诊断（`POST /api/ai/analysis`，中文建议）
+  - AI 生成材料页新增「🧠 参考我的学习画像生成」开关：让 AI 围绕你的薄弱句 / 弱场景写对话，把 LLM 用到点子上
+- **材料按导入时间排序**：材料列表新增排序下拉（时间新→旧 / 旧→新 / 导入顺序），每张卡片显示「📥 导入时间」（今天 / 昨天 / N 天前 / 月-日）
+- **设置页信息架构优化（移动端不挤不乱）**：
+  - 冗长解释改为「ⓘ」小问号点击展开（语音识别、WER 阈值、CORS、AI Provider、解释提示词），默认收起，窄屏标签与控件自动换行堆叠
+  - CORS 项改为通俗文案：「跨域抓取代理（仅网页版）」+ 一句话说明 + ⓘ 讲清"浏览器跨域限制"与第三方代理的隐私提示；AI Key 存储说明按平台区分（桌面钥匙串 / 网页手机仅本机浏览器）
+
+### 修复
+- 网页/APK（本地引擎模式）此前 AI 相关端点全是 stub：现在支持 Provider 的增删改查与连接测试、回忆中文提示、通俗解释、AI 分析（`/api/ai/*`、`/learner/profile` 全部本地实现，配置仍存 IndexedDB、不落任何服务器）
+- service worker 缓存版本 `v15 → v16`
+
+### 新增
 - **手机端 Whisper 转写加速：多 Worker 并行**（浏览器/APK 内转写 3-4x，文本与单线程完全一致）：
   - 新增 `frontend/transcribe-worker.js`：音频按 30s 窗口 / 20s 步长切块（与 transformers v2 内部 chunked 的 hop = chunk − 2×stride 完全同构），分发给最多 4 个 Worker 并行推理（数量按 `navigator.deviceMemory` 分级防低端机 OOM），合并时按每块左右 5s stride 区间去重（首块左 0、末块右 0），输出与单线程逐句一致（实测 157s 音频归一化文本完全相同）；worker 失败自动回退单线程
   - 设置页（本地模式）新增「推理后端」实时探测：WebGPU（GPU 加速）/ WASM（CPU 单线程）——真机 WebView 若支持 WebGPU 可获数倍以上收益

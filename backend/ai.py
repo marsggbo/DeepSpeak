@@ -24,6 +24,26 @@ PROVIDER_PRESETS = {
     "openai_compatible": {"base_url": "", "models": []},
 }
 
+# 常用平台一键填充（设置页 chips；type 必须是 PROVIDER_PRESETS 里的类型）
+PLATFORM_PRESETS = [
+    {"name": "OpenAI", "type": "openai", "base_url": "https://api.openai.com/v1",
+     "models": ["gpt-4o-mini", "gpt-4o"]},
+    {"name": "DeepSeek", "type": "openai_compatible", "base_url": "https://api.deepseek.com/v1",
+     "models": ["deepseek-chat", "deepseek-reasoner"]},
+    {"name": "OpenRouter", "type": "openai_compatible", "base_url": "https://openrouter.ai/api/v1",
+     "models": ["openai/gpt-4o-mini", "deepseek/deepseek-chat", "meta-llama/llama-3.3-70b-instruct"]},
+    {"name": "Moonshot Kimi", "type": "openai_compatible", "base_url": "https://api.moonshot.cn/v1",
+     "models": ["moonshot-v1-8k", "moonshot-v1-32k"]},
+    {"name": "智谱 GLM", "type": "openai_compatible", "base_url": "https://open.bigmodel.cn/api/paas/v4",
+     "models": ["glm-4-flash", "glm-4-air"]},
+    {"name": "通义千问", "type": "openai_compatible", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+     "models": ["qwen-turbo", "qwen-plus"]},
+    {"name": "Groq", "type": "openai_compatible", "base_url": "https://api.groq.com/openai/v1",
+     "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]},
+    {"name": "Ollama（本地）", "type": "ollama", "base_url": "http://localhost:11434/v1",
+     "models": ["qwen2.5", "llama3.1"]},
+]
+
 
 # ---------- Key 安全存储 ----------
 
@@ -303,6 +323,54 @@ def llm_alternatives(provider, expression):
         {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
     ])
     return _parse_json(out) or {}
+
+
+def llm_explain_sentence(provider, sentence, custom_prompt=""):
+    """通俗解释一句英语：翻译 + 有趣讲解 + 例子。
+
+    custom_prompt 为用户自定义提示词（设置项 llm_explain_prompt），
+    含 {text} 占位符时直接替换后自由发挥（非 JSON）；留空走内置模板。
+    """
+    if custom_prompt and "{text}" in custom_prompt:
+        out = chat(provider, [
+            {"role": "system",
+             "content": "你是一位英语学习助手，用简体中文、轻松有趣的方式回答，不要用术语。"},
+            {"role": "user", "content": custom_prompt.replace("{text}", sentence)},
+        ], temperature=0.4, json_mode=False)
+        return {"translation_zh": "", "explanation_zh": out.strip(), "examples": []}
+    prompt = {
+        "task": "用轻松、有趣、通俗的方式给一位中国英语学习者讲解这句英语。",
+        "sentence": sentence,
+        "output_schema": {
+            "translation_zh": "口语化中文翻译（不出现英文）",
+            "explanation_zh": "通俗有趣的讲解（80 字内）：这句话什么场景用、结构或地道之处、容易听错/用错的地方",
+            "examples": [{"en": "同类情景下的自然说法（英文）", "zh": "中文"}],
+        },
+        "rule": "Max 2 examples. Use simplified Chinese. explanation must be fun and easy to understand, avoid jargon.",
+    }
+    out = chat(provider, [
+        {"role": "system", "content": _SYS},
+        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+    ])
+    data = _parse_json(out) or {}
+    return {
+        "translation_zh": (data.get("translation_zh") or "").strip(),
+        "explanation_zh": (data.get("explanation_zh") or "").strip(),
+        "examples": data.get("examples") or [],
+    }
+
+
+def llm_analyze_learner(provider, profile_text, custom_prompt=""):
+    """基于学习画像做 AI 诊断/建议（自由文本输出）。"""
+    request = custom_prompt or (
+        "请根据我的学习画像，指出 3 个最需要改进的地方，"
+        "并给出具体可执行的建议（中文，300 字以内）。"
+    )
+    out = chat(provider, [
+        {"role": "system", "content": "你是一位懂英语学习法的 AI 教练，用简体中文、简洁务实地回复，不要用术语。"},
+        {"role": "user", "content": "【我的学习画像】\n" + profile_text + "\n\n【要求】\n" + request},
+    ], temperature=0.5, json_mode=False)
+    return out.strip()
 
 
 def test_provider(provider):

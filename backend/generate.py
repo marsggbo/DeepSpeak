@@ -90,6 +90,11 @@ def generate_material(params, mid=None):
         "输出严格 JSON（不要输出任何其他文字）："
         '{{"title": "对话标题（英文短语级，简短）", "lines": [{{"speaker": "a" 或 "b", "text": "一句完整英文"}}]}}'
     ).format(turns=turns, sec=target_sec, diff=DIFFICULTY_PROMPTS[difficulty])
+    profile = params.get("profile_summary") or ""
+    if profile:
+        sys_prompt += (
+            "\n\n【学习者画像（据此让对话更贴合其薄弱环节，但保持自然）】\n" + profile
+        )
 
     raw = ai_mod.chat(
         provider,

@@ -76,6 +76,57 @@ const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
+/* ================= AI 通俗解释（学习步骤里点一下，让 LLM 用大白话讲解这句英语） ================= */
+function aiExplainBtn(text, label) {
+  return `<button type="button" class="btn sm" data-ai-explain="${esc(text)}">${label || "🤖 通俗解释"}</button>`;
+}
+function bindAiExplain(panel) {
+  $$("[data-ai-explain]", panel).forEach((btn) => {
+    const text = btn.dataset.aiExplain;
+    const label = btn.textContent;
+    const box = document.createElement("div");
+    box.className = "ai-explain-box";
+    box.style.display = "none";
+    btn.after(box);
+    // 没有可用的 AI Provider 时隐藏按钮（避免点了报错）
+    getHealth().then((h) => { if (!h.ai_provider) btn.style.display = "none"; }).catch(() => { btn.style.display = "none"; });
+    btn.addEventListener("click", async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.textContent = "AI 讲解中…";
+      box.style.display = "block";
+      box.innerHTML = `<span class="spin"></span> 正在请 AI 讲解…`;
+      try {
+        const r = await api("/api/explain", { method: "POST", body: { text, kind: "sentence" } });
+        box.innerHTML = `
+          <div class="ai-explain">
+            ${r.translation_zh ? `<div class="ai-explain-zh">🇨🇳 ${esc(r.translation_zh)}</div>` : ""}
+            ${r.explanation_zh ? `<div class="ai-explain-text">${esc(r.explanation_zh)}</div>` : ""}
+            ${(r.examples || []).length ? `<div class="ai-explain-ex">${r.examples.map((e) => `<div>💬 ${esc(e.en || e.text || "")}${e.zh ? ` <span class="muted">${esc(e.zh)}</span>` : ""}</div>`).join("")}</div>` : ""}
+            <div class="hint" style="color:var(--muted);font-size:11px;margin-top:6px">由 AI 生成，仅供参考 · 提示词可在 设置 → AI Provider 里自定义</div>
+          </div>`;
+      } catch (e) {
+        box.innerHTML = `<div class="ai-explain err">❌ ${esc((e && e.message) || e)}</div>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = label;
+      }
+    });
+  });
+}
+
+/* 材料导入时间的人性化显示（今天/昨天/N 天前/月-日） */
+function fmtImported(ts) {
+  if (!ts) return "—";
+  const d = new Date(String(ts).replace(" ", "T").replace(/\.\d+$/, ""));
+  if (isNaN(d)) return String(ts).slice(0, 10);
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  if (days <= 0) return "今天";
+  if (days === 1) return "昨天";
+  if (days < 7) return days + " 天前";
+  return `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function toast(msg, type) {
   const root = $("#toast-root");
   const el = document.createElement("div");
@@ -550,6 +601,15 @@ async function viewStats() {
       }).join("")}
     </div>
     <div class="heat-legend"><span>少</span>${[0, 1, 2, 3, 4].map(l => `<i class="heat-cell lv${l}"></i>`).join("")}<span>多</span></div></div>
+    <div class="section-title">🧠 学习画像</div>
+    <div class="card">
+      <div class="page-sub" style="font-size:13px">系统从你的历史记录（错误类型、反复听错的句子、弱场景、复习节奏）沉淀出结构化画像，可以一键交给 AI 分析，也可以在「AI 生成材料」时让 AI 参考它，把对话写得贴合你的难点。</div>
+      <div id="profile-stats" style="margin-top:10px"></div>
+      <div class="btn-row" style="margin-top:12px">
+        <button class="btn sm primary" id="btn-ai-analysis">🤖 让 AI 分析我的薄弱点</button>
+      </div>
+      <div id="profile-analysis" style="margin-top:10px"></div>
+    </div>
     <div class="section-title">进步对比 · 整段精听准确率</div>
     <div class="panel">
       <select class="input" id="prog-select" style="max-width:400px">
@@ -565,6 +625,42 @@ async function viewStats() {
       toast("打卡成功，今天也坚持住了！", "success");
       viewStats();
     });
+  }
+  // 学习画像：渲染结构化摘要 + AI 分析
+  const pstats = $("#profile-stats");
+  const analysisBox = $("#profile-analysis");
+  const aiBtn = $("#btn-ai-analysis");
+  getHealth().then((h) => { if (!h.ai_provider) aiBtn.style.display = "none"; }).catch(() => { aiBtn.style.display = "none"; });
+  try {
+    const prof = await api("/api/learner/profile");
+    const p = prof.profile || {};
+    const sum = String(prof.summary || "").split("\n").filter(Boolean).map(l => `<div>· ${esc(l)}</div>`).join("");
+    pstats.innerHTML = `
+      <div class="profile-chips">
+        <span class="chip gray">📚 材料 ${p.materials || 0} 篇</span>
+        <span class="chip gray">🔤 生词 ${p.words || 0} 个</span>
+        ${p.dictation ? `<span class="chip gray">✍️ 听写 ${p.dictation.total || 0} 句 · 通过率 ${Math.round((p.dictation.passed || 0) / Math.max(1, p.dictation.total) * 100)}%</span>` : ""}
+        ${p.speaking ? `<span class="chip gray">🗣️ 开口 ${p.speaking.total || 0} 次 · 通过率 ${Math.round((p.speaking.passed || 0) / Math.max(1, p.speaking.total) * 100)}%</span>` : ""}
+        ${(p.weak_scenes || []).length ? `<span class="chip gray">弱场景：${p.weak_scenes.map(w => esc(w.label)).join("、")}</span>` : ""}
+      </div>
+      <div class="profile-summary">${sum || `<div class="hint" style="color:var(--muted)">学几课之后，这里就会出现你的学习画像</div>`}</div>`;
+    aiBtn.addEventListener("click", async () => {
+      aiBtn.disabled = true;
+      aiBtn.textContent = "AI 分析中…（约 10-20 秒）";
+      analysisBox.innerHTML = `<span class="spin"></span> 正在把学习画像发给 AI…`;
+      try {
+        const r = await api("/api/ai/analysis", { method: "POST" });
+        analysisBox.innerHTML = `<div class="ai-explain"><div class="ai-explain-text">${esc(r.reply)}</div>
+          <div class="hint" style="color:var(--muted);font-size:11px;margin-top:6px">分析会发送给你配置的 AI Provider · 提示词可在 设置 → AI Provider 里查看</div></div>`;
+      } catch (e) {
+        analysisBox.innerHTML = `<div class="ai-explain err">❌ ${esc((e && e.message) || e)}</div>`;
+      } finally {
+        aiBtn.disabled = false;
+        aiBtn.textContent = "🤖 让 AI 分析我的薄弱点";
+      }
+    });
+  } catch (e) {
+    pstats.innerHTML = `<div class="hint" style="color:var(--muted)">画像生成失败：${esc((e && e.message) || e)}</div>`;
   }
   $("#prog-select").addEventListener("change", async (e) => {
     const mid = e.target.value;
@@ -612,7 +708,7 @@ function matGroup(m) {
 }
 
 async function viewMaterials() {
-  const { materials } = await api("/api/materials");
+  let materials = (await api("/api/materials")).materials;
   const v = $("#view");
   const filter = { tab: "all", q: "", scene: "", src: "", tag: "" };
   const allTags = [...new Set(materials.flatMap(m => (m.tags || "").split(",").map(t => t.trim()).filter(Boolean)))].sort();
@@ -639,6 +735,11 @@ async function viewMaterials() {
       </div>
       <div class="mat-filter-row">
         <input class="input" id="mat-search" placeholder="🔍 搜索标题 / 描述 / 标签…" style="max-width:320px">
+        <select class="input" id="mat-sort" style="max-width:150px" title="排序方式">
+          <option value="new" selected>🕒 时间新 → 旧</option>
+          <option value="time_asc">🕒 时间旧 → 新</option>
+          <option value="old">📥 导入顺序</option>
+        </select>
         <span class="filter-chips" id="mat-scenes">${allScenes.map(s => `<button class="chip filter-chip" data-k="scene" data-v="${esc(s)}">${s}</button>`).join("")}</span>
         <span class="filter-chips" id="mat-srcs">${allSrcs.map(s => {
           const [e, l] = SRC_LABEL[s] || ["📄", s];
@@ -680,6 +781,7 @@ async function viewMaterials() {
           <span class="chip">${m.scene_emoji} ${esc(m.scene_label)}</span>
           <span class="chip gray">${e} ${l}</span>
           <span class="chip gray">${m.unit_total} 句</span>
+          <span class="chip gray" title="导入时间">📥 ${fmtImported(m.created_at)}</span>
           ${tags.map(t => `<span class="chip tag-chip">#${esc(t)}</span>`).join("")}
           <span style="margin-left:auto;color:var(--muted);font-size:12px">${GROUP_LABEL[matGroup(m)]}</span>
         </div>
@@ -716,6 +818,11 @@ async function viewMaterials() {
     }
     render();
   }));
+  // 排序（服务端排，重新拉取）
+  $("#mat-sort").addEventListener("change", async (e) => {
+    materials = (await api("/api/materials?sort=" + e.target.value)).materials;
+    render();
+  });
   // 搜索（防抖）
   let st;
   $("#mat-search").addEventListener("input", (e) => {
@@ -1441,10 +1548,14 @@ async function showStep(key) {
       <div class="reference-text">${esc(u.text)}</div>
       ${studioCtx.lastDict ? renderDiffMini(studioCtx.lastDict) : ""}
       <div id="unit-words"></div>
-      <div class="btn-row" style="margin-top:8px"><button class="btn sm" id="edit-text">✏️ 原文有误？纠正</button></div>
+      <div class="btn-row" style="margin-top:8px">
+        <button class="btn sm" id="edit-text">✏️ 原文有误？纠正</button>
+        ${aiExplainBtn(u.text)}
+      </div>
       <div class="btn-row"><button class="btn primary" id="r-next">记住了，口语复述 →</button></div>`;
     renderUnitWords(u);
     bindTextCorrection(panel, u);
+    bindAiExplain(panel);
     $("#r-next").addEventListener("click", () => showStep("r_speak"));
 
   } else if (key === "r_speak") {
@@ -1575,13 +1686,17 @@ async function showStep(key) {
       <div class="reference-text">${esc(u.text)}</div>
       ${studioCtx.lastDict ? renderDiffMini(studioCtx.lastDict) : ""}
       <div id="unit-words"></div>
-      <div class="btn-row" style="margin-top:8px"><button class="btn sm" id="edit-text">✏️ 原文有误？纠正</button></div>
+      <div class="btn-row" style="margin-top:8px">
+        <button class="btn sm" id="edit-text">✏️ 原文有误？纠正</button>
+        ${aiExplainBtn(u.text)}
+      </div>
       <div class="btn-row">
         <button class="btn primary" id="ack">明白了，进入跟读 →</button>
       </div>`;
     renderExpressionsPanel(u);
     renderUnitWords(u);
     bindTextCorrection(panel, u);
+    bindAiExplain(panel);
     $("#ack").addEventListener("click", async () => {
       const cur = (await api(`/api/units/${u.id}`)).unit;
       if (cur.status === "REVEALED") await api(`/api/units/${u.id}/ack`, { method: "POST" });
@@ -1601,6 +1716,7 @@ async function showStep(key) {
         <button class="btn" id="loop">🔁 循环</button>
       </div>
       <div class="reference-text">${esc(u.text)}</div>
+      ${aiExplainBtn(u.text)}
       <div id="rec-area"></div>
       <div class="btn-row" style="margin-top:12px">
         <button class="btn green" id="speak-submit">提交</button>
@@ -1608,6 +1724,7 @@ async function showStep(key) {
       </div>
       <div id="speak-result"></div>`;
     bindPlaybar(panel, u, {});
+    bindAiExplain(panel);
     const area = $("#rec-area");
     const ta = document.createElement("textarea");
     ta.className = "input";
@@ -1664,12 +1781,14 @@ async function showStep(key) {
       if (refBox.style.display === "none" || !refBox.innerHTML) {
         refBox.innerHTML = `
           <div class="reference-text">${esc(u.text)}</div>
+          ${aiExplainBtn(u.text)}
           <div id="recall-unit-words"></div>
           <div class="hint" style="font-size:12px;color:var(--muted);margin-top:6px">记住原文后，再试一次；也可以直接「完成本句」进入下一步。</div>
           <div class="btn-row" style="margin-top:10px">
             <button class="btn primary" id="rec-ref-skip">完成本句 →</button>
           </div>`;
         renderUnitWords(u, $("#recall-unit-words"));
+        bindAiExplain(refBox);
         $("#rec-ref-skip", refBox).addEventListener("click", skipRecall);
       }
       refBox.style.display = "block";
@@ -2632,12 +2751,14 @@ function renderFocusProof() {
         ${empty
           ? `<div class="proof-reconstruct muted">（空着没写——先回去听一遍，或展开原文认认发音）</div>`
           : `<div class="proof-reconstruct">${renderProofReconstruct(diff, mode)}</div>`}
-        <div class="proof-ref" style="display:none"><div class="label">原文</div><div class="reference-text">${esc(u.text)}</div></div>
+        <div class="proof-ref" style="display:none"><div class="label">原文</div><div class="reference-text">${esc(u.text)}</div>
+          ${aiExplainBtn(u.text)}</div>
       </div>`;
   }).join("");
   $$("[data-play]", list).forEach(b => b.addEventListener("click", () => {
     playUnit({ audio: units[+b.dataset.play].audio });
   }));
+  bindAiExplain(list);
   $("#f-mode-easy").addEventListener("click", () => {
     localStorage.setItem("focus_proof_mode", "easy");
     renderFocusProof();
@@ -2800,12 +2921,16 @@ async function viewSettings() {
       <div class="setting-row">
         <div><div class="label">${localMode ? "识别模型" : "faster-whisper"}</div>
           <div class="desc">${localMode
-            ? "导入播客 / 音频文件时在浏览器内用 Whisper 转写（transformers.js，WebGPU/WASM，q8 量化）。首次联网下载模型后缓存，之后离线可用。tiny.en 更快更小，base.en 更准（与桌面同级）。"
+            ? "导入音频时在浏览器内用 Whisper 转写（首次联网下载模型后离线可用）"
             : health.asr_engine === "web"
             ? "✅ 浏览器语音识别（Web Speech API）— 录音会自动转写"
             : health.asr_available
               ? "✅ 已安装 · 录音会自动本地转写"
               : "❌ 未安装 — 运行 ./run.sh 会自动安装（首次需联网下载模型）"}</div>
+          <button type="button" class="info-ico" data-info="asr">ⓘ</button>
+          <div class="info-detail" id="info-asr" hidden>${localMode
+            ? "模型在首次导入音频时下载并缓存在本机浏览器（之后离线可用）。tiny.en 更快更小，base.en 更准。推理优先走 WebGPU（快），不支持则退回 WASM（CPU 单线程）。"
+            : "桌面版用 faster-whisper 离线转写。模型越大越准也越慢、占空间越多（base.en 约 145MB）。"}</div>
           ${localMode ? `<div class="hint" id="asr-backend" style="font-size:12px;color:var(--muted);margin-top:4px">推理后端检测中…</div>` : ""}</div>
         <select id="asr-model">
           ${(localMode ? ["tiny.en", "base.en"] : ["tiny.en", "base.en", "small.en", "medium.en"]).map(m => `<option ${s.asr_model === m ? "selected" : ""}>${m}</option>`).join("")}
@@ -2813,17 +2938,20 @@ async function viewSettings() {
       </div>
       ${localMode ? `
       <div class="setting-row">
-        <div><div class="label">CORS 代理（仅网页版跨域抓取用）</div>
-          <div class="desc">网页版受浏览器同源限制，抓取跨域 RSS / 音频需一个代理前缀（形如 https://proxy/?url=）。链接与音频会经过该第三方，可留空关闭。手机 APK 用原生网络请求，忽略此项、无需代理。</div></div>
+        <div><div class="label">跨域抓取代理（仅网页版）</div>
+          <div class="desc">部分 RSS 源会拦截网页直接抓取，填一个代理前缀即可正常导入；手机 App 走原生网络，无需此项</div>
+          <button type="button" class="info-ico" data-info="cors">ⓘ</button>
+          <div class="info-detail" id="info-cors" hidden>简单说：浏览器出于安全会阻止网页读取其他网站的数据（这叫「跨域限制」），所以网页版抓取别人的 RSS / 音频会失败。代理是个中间人：它替网页去取数据再转交回来，从而绕过限制。注意：链接和音频内容会经过该代理（第三方），敏感内容慎用；手机 App 不受浏览器限制，不需要代理。常见代理格式：https://proxy.example/?url=</div>
+        </div>
       </div>
       <div class="setting-row">
-        <input class="input" id="cors-proxy" value="${esc(s.cors_proxy || "")}" placeholder="留空 = 关闭（仅本地/APK/同源可用）" style="flex:1">
+        <input class="input" id="cors-proxy" value="${esc(s.cors_proxy || "")}" placeholder="留空 = 关闭" style="flex:1">
         <button class="btn sm primary" id="save-cors" style="margin-left:8px">保存</button>
       </div>
       ` : ""}
       ${hasTts ? `
       <div class="setting-row">
-        <div><div class="label">语音合成（TTS）</div><div class="desc">Kokoro 神经引擎离线合成（与桌面版同款模型与音色，首次使用需联网下载语音模型，之后离线可用）；更换音色后内置材料会重新合成</div></div>
+        <div><div class="label">语音合成（TTS）</div><div class="desc">离线神经语音（与桌面版同款模型与音色）；首次使用需联网下载语音模型，之后离线可用</div></div>
         <div style="display:flex;gap:6px;align-items:center">
           <span style="font-size:12px;color:var(--muted)">A</span>
           <select id="tts-voice-a" style="width:140px">${voices.voices.filter(v => v.locale.startsWith("en")).map(v => `<option ${s.tts_voice_a === v.name ? "selected" : ""}>${v.name}</option>`).join("")}</select>
@@ -2846,7 +2974,7 @@ async function viewSettings() {
       ` : `
       <div class="setting-row">
         <div><div class="label">语音合成（TTS）</div>
-          <div class="desc">Kokoro 神经引擎暂不可用（首次使用需联网下载语音模型，检查网络后重试）。桌面版内置同款 Kokoro 引擎（28 个音色）。</div></div>
+          <div class="desc">Kokoro 神经引擎暂不可用（首次使用需联网下载语音模型，检查网络后重试）；桌面版内置同款引擎（28 音色）</div></div>
       </div>
       `}
     </div>
@@ -2854,7 +2982,10 @@ async function viewSettings() {
     <div class="section-title">⚖️ 训练判定阈值</div>
     <div class="card">
       <div class="setting-row">
-        <div><div class="label">听写通过 WER</div><div class="desc">低于该词错率判定通过；轻微错误（冠词/时态）自动豁免</div></div>
+        <div><div class="label">听写通过 WER</div><div class="desc">低于该词错率判定通过</div>
+          <button type="button" class="info-ico" data-info="wer">ⓘ</button>
+          <div class="info-detail" id="info-wer" hidden>WER = 词错率（听错的词 ÷ 总词数）。0.12 表示 12% 以内的错误算通过，轻微的冠词 / 时态错误会自动豁免。想更严格就调低，更宽松就调高。</div>
+        </div>
         <input type="number" id="set-wer" step="0.01" min="0" max="1" value="${s.dictation_pass_wer}" style="width:90px">
       </div>
       <div class="setting-row">
@@ -2866,18 +2997,23 @@ async function viewSettings() {
         <input type="number" id="set-recall" min="0" max="100" value="${s.recall_pass_score}" style="width:90px">
       </div>
       <div class="setting-row">
-        <div><div class="label">精听自由导航</div><div class="desc">开启后整段精听的 4 个步骤可直接点击跳转 / 跳过（默认锁定，按顺序进行）</div></div>
+        <div><div class="label">精听自由导航</div><div class="desc">开启后整段精听的 4 个步骤可直接点击跳转 / 跳过</div></div>
         <input type="checkbox" id="set-free-nav" ${s.focus_free_nav === "1" || s.focus_free_nav === "true" ? "checked" : ""} style="width:auto">
       </div>
       <div class="btn-row" style="margin-top:10px"><button class="btn sm primary" id="save-threshold">保存</button></div>
     </div>
 
-    <div class="section-title">🤖 AI Providers（可选增强）</div>
+    <div class="section-title">🤖 AI Provider（可选增强）</div>
     <div class="card">
-      <div class="page-sub" style="margin-bottom:12px">没有 AI 也能完整学习；配置后获得语义评估、表达解释等增强。API Key 只存在本机钥匙串（Keychain），不写入数据库。</div>
+      <div class="page-sub" style="margin-bottom:12px">没有 AI 也能完整学习；配置后获得语义评估、通俗解释、AI 分析等增强
+        <button type="button" class="info-ico" data-info="ai-intro">ⓘ</button>
+        <span class="info-detail" id="info-ai-intro" hidden>AI 是可选增强层：帮你理解句子、评估口语表达、分析学习薄弱点。需要你自己去 OpenAI / DeepSeek / 智谱等平台申请 API Key（一般有免费额度）填在这里；电脑上装了 Ollama 也可以用本地开源模型，完全免费。桌面版 Key 存系统钥匙串；网页 / 手机版 Key 只存本机浏览器。两者都不会上传到任何服务器。</span>
+      </div>
       <div id="provider-list"></div>
       <div class="divider"></div>
       <div class="panel-title" style="font-size:15px">添加 Provider</div>
+      <label class="field">常用平台（点击一键填充，再填 API Key）</label>
+      <div class="preset-chips" id="pv-chips"></div>
       <label class="field">类型</label>
       <select class="input" id="pv-type">
         <option value="openai">OpenAI</option>
@@ -2898,6 +3034,17 @@ async function viewSettings() {
         <button class="btn primary" id="pv-save">保存</button>
         <button class="btn" id="pv-test-new">测试连接</button>
       </div>
+      <div class="divider"></div>
+      <div class="panel-title" style="font-size:15px">AI 解释提示词</div>
+      <div class="setting-row">
+        <div><div class="label">通俗解释模板</div>
+          <div class="desc">点「🤖 通俗解释」时发给 AI 的提示词，{text} 代表原句</div>
+          <button type="button" class="info-ico" data-info="explain-prompt">ⓘ</button>
+          <div class="info-detail" id="info-explain-prompt" hidden>默认会让 AI 给出：中文翻译 + 通俗有趣的讲解 + 1-2 个同类例子。你可以改成自己的模板，比如「只给翻译」「重点讲语法」「模仿老师的语气」。{text} 会被替换成你正在学的句子。留空 = 使用内置模板。</div>
+        </div>
+        <textarea class="input" id="llm-explain-prompt" rows="3" placeholder="留空 = 内置模板" style="flex:1;min-width:220px;resize:vertical">${esc(s.llm_explain_prompt || "")}</textarea>
+      </div>
+      <div class="btn-row" style="margin-top:10px"><button class="btn sm primary" id="save-explain-prompt">保存提示词</button></div>
     </div>
 
     <div class="section-title">🎨 界面</div>
@@ -2985,7 +3132,7 @@ async function viewSettings() {
           </span>
         </div>
         <div class="hint" style="font-size:12px;color:var(--muted);margin-top:4px">
-          ${p.base_url || ""} · ${p.has_key ? "已保存 API Key（钥匙串）" : "无 API Key"}
+          ${p.base_url || ""} · ${p.has_key ? (localMode ? "已保存 API Key（仅存本机浏览器）" : "已保存 API Key（钥匙串）") : "无 API Key"}
         </div>
         <div class="hint" id="test-out-${p.id}" style="font-size:12px;margin-top:4px"></div>
       </div>`).join("") || `<div class="hint" style="color:var(--muted)">还没有 Provider</div>`;
@@ -3008,6 +3155,36 @@ async function viewSettings() {
     }));
   };
   renderProviders();
+
+  // 常用平台预设 chips（点击一键填充，只需再填 API Key）
+  const chips = $("#pv-chips");
+  const platforms = providers.platforms || window.dsPlatforms || [];
+  if (chips && platforms.length) {
+    chips.innerHTML = platforms.map(pl => `<button type="button" class="chip" data-pf='${esc(JSON.stringify(pl))}'>${esc(pl.name)}</button>`).join("");
+    $$(".chip", chips).forEach(b => b.addEventListener("click", () => {
+      let pl;
+      try { pl = JSON.parse(b.dataset.pf); } catch (e) { return; }
+      if (pl.type && $(`#pv-type option[value="${pl.type}"]`)) $("#pv-type").value = pl.type;
+      if (pl.base_url) $("#pv-url").value = pl.base_url;
+      if (pl.model) $("#pv-model").value = pl.model;
+      if (pl.name) $("#pv-name").value = pl.name;
+      $("#pv-key").focus();
+      toast(`已填充 ${pl.name} 配置，粘贴 API Key 即可`, "info");
+    }));
+  }
+
+  // ⓘ 说明：点击展开/收起（内容在设置行内部，移动端不会撑乱布局）
+  $$(".info-ico").forEach(ico => ico.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const detail = $("#info-" + ico.dataset.info);
+    if (detail) detail.hidden = !detail.hidden;
+  }));
+
+  const saveExplainBtn = $("#save-explain-prompt");
+  if (saveExplainBtn) saveExplainBtn.addEventListener("click", async () => {
+    await api("/api/settings", { method: "PUT", body: { llm_explain_prompt: $("#llm-explain-prompt").value.trim() } });
+    toast("已保存通俗解释提示词", "success");
+  });
 
   // 推理后端探测（本地引擎）：WebGPU 可用与否直接决定转写速度量级
   if (localMode && window.dsImport && window.dsImport.detectBackend) {
@@ -3194,6 +3371,9 @@ async function viewGenerate() {
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:14px;cursor:pointer">
         <input type="checkbox" id="gen-random" style="accent-color:var(--accent)"> 🎲 随机生成（随机挑一个场景和参数，生成的音频就是今天的学习内容）
       </label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:14px;cursor:pointer" title="让 AI 参考你的学习画像（薄弱句、弱场景、错误类型），把对话写得贴合你的难点">
+        <input type="checkbox" id="gen-use-profile" style="accent-color:var(--accent)"> 🧠 参考我的学习画像生成（对话会围绕你的薄弱点展开）
+      </label>
     </div>
     <div class="btn-row" style="margin-top:16px">
       <button class="btn primary big" id="gen-run">✨ 生成并合成语音</button>
@@ -3221,6 +3401,7 @@ async function viewGenerate() {
     chips.forEach(c => c.disabled = random);
     if (random) { $("#gen-custom").disabled = true; } else { $("#gen-custom").disabled = false; }
   });
+  const useProfileEl = $("#gen-use-profile");
 
   $("#gen-run").addEventListener("click", async () => {
     const btn = $("#gen-run");
@@ -3231,7 +3412,7 @@ async function viewGenerate() {
     try {
       const r = await api("/api/materials/generate", {
         method: "POST",
-        body: { scene, custom_prompt: custom, turns: turnsEl.value, difficulty: diff, length_seconds: lenEl.value, random },
+        body: { scene, custom_prompt: custom, turns: turnsEl.value, difficulty: diff, length_seconds: lenEl.value, random, use_profile: useProfileEl ? useProfileEl.checked : false },
       });
       const mid = r.id;
       for (let i = 0; i < 300; i++) {

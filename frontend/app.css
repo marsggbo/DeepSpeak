@@ -314,6 +314,50 @@ label.field { display: block; font-size: 13px; color: var(--muted); margin: 12px
 .setting-row .desc { font-size: 12px; color: var(--muted); margin-top: 1px; }
 .setting-row select, .setting-row input[type=number] { background: var(--bg2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-size: 13px; }
 .provider-card { border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-bottom: 10px; background: var(--bg2); }
+.provider-card > div { flex-wrap: wrap; }
+.provider-card > div:first-child { gap: 8px; }
+
+/* 设置项 ⓘ 问号：点击展开简短解释（省篇幅，窄屏不挤） */
+.info-ico {
+  background: none; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 50%; width: 19px; height: 19px; padding: 0;
+  font-size: 11px; line-height: 1; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  vertical-align: 1px; margin-left: 4px;
+}
+.info-ico:hover { color: var(--accent); border-color: var(--accent); }
+.info-detail {
+  display: block; margin-top: 6px; max-width: 640px;
+  font-size: 12px; line-height: 1.7; color: var(--muted);
+  background: var(--bg2); border: 1px dashed var(--border);
+  border-radius: 8px; padding: 8px 11px;
+}
+.info-detail[hidden] { display: none; }
+
+/* 常用平台一键填充 */
+.preset-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 12px; }
+.preset-chips .chip { cursor: pointer; background: var(--card2); }
+.preset-chips .chip:hover { border-color: var(--accent); color: var(--accent); }
+
+/* LLM 通俗解释（学习步骤里的 🤖 按钮 + 结果框） */
+.ai-explain-box { margin-top: 8px; }
+.ai-explain {
+  background: rgba(74,144,226,.08); border: 1px solid rgba(74,144,226,.3);
+  border-radius: 10px; padding: 10px 14px; font-size: 14px; line-height: 1.8;
+}
+.ai-explain-zh { font-weight: 600; margin-bottom: 6px; }
+.ai-explain-text { white-space: pre-wrap; }
+.ai-explain-ex { margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(74,144,226,.25); font-size: 13px; color: var(--muted); }
+.ai-explain-ex div { margin-top: 4px; }
+.ai-explain.err { background: rgba(255,107,107,.08); border-color: rgba(255,107,107,.35); }
+
+/* 学习画像卡 */
+.profile-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.profile-summary {
+  margin-top: 10px; font-size: 13px; line-height: 1.9; color: var(--muted);
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 14px;
+}
 .switch { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
 .switch input { opacity: 0; width: 0; height: 0; }
 .switch i { position: absolute; inset: 0; background: var(--border); border-radius: 99px; transition: .2s; cursor: pointer; }
@@ -466,6 +510,13 @@ kbd { background: var(--bg2); border: 1px solid var(--border); border-radius: 5p
   .proof-reconstruct { font-size: 14px; line-height: 2.4; }
   .bar-chart { gap: 4px; }
   .heat { gap: 3px; }
+  /* 窄屏：设置行标签与控件换行堆叠，说明文字不撑破布局 */
+  .setting-row { flex-wrap: wrap; align-items: flex-start; }
+  .setting-row > div:first-child { flex: 1 1 100%; }
+  .setting-row > select, .setting-row > input[type=number], .setting-row > .input { max-width: 100%; }
+  .setting-row .info-detail { max-width: 100%; }
+  .provider-card [style*="margin-left:auto"] { margin-left: 0; }
+  .proof-ref { margin-top: 8px; }
 }
 
 /* 逐句强化：步骤导航行 */
