@@ -398,6 +398,77 @@ const DeepSpeakEngine = (() => {
     }
   }
   function importedAudioUrl(mid) { return _audioUrls[mid] || ""; }
+
+  // 转写期间保持屏幕常亮（Screen Wake Lock API，APK/支持的浏览器）：
+  // 防止讲一讲就灭屏/锁屏导致下载和转写被系统冻结。
+  let _wake = null;
+  async function keepScreenAwake(on) {
+    try {
+      if (on) {
+        if (!_wake && navigator.wakeLock && document.visibilityState === "visible") {
+          _wake = await navigator.wakeLock.request("screen");
+        }
+      } else if (_wake) {
+        await _wake.release();
+        _wake = null;
+      }
+    } catch (e) { /* 不支持或权限拒绝：静默降级 */ }
+  }
+
+  // ---------- 处理队列 ----------
+  // 所有转写任务（下载→转写、或仅转写）统一入队，单线程逐个执行：
+  //   - 同材料去重：已在队列/正在跑的不会再塞一份（用户连点、resume 与手动触发并行都安全）
+  //   - 任务全程保持屏幕常亮（防锁屏把 WebView 冻结），结束统一释放
+  //   - 失败由队队列统一标记 error；材料状态/进度仍靠前端轮询
+  //   - 断点续跑：页面被杀后重新打开时，resumeStuckProcessing 把仍处 processing 的材料重新入队
+  const _queue = [];     // 待处理任务 {mid, fn}
+  let _queueRunning = false; // 泵是否在跑
+  let _currentMid = null;  // 当前正在执行任务的材料 id（用于去重）
+
+  function enqueueProcessing(mid, fn) {
+    if (_currentMid === mid || _queue.some((t) => t.mid === mid)) return; // 同材料已有任务
+    _queue.push({ mid, fn });
+    pumpQueue();
+  }
+
+  async function pumpQueue() {
+    if (_queueRunning) return;
+    _queueRunning = true;
+    while (_queue.length) {
+      const t = _queue.shift();
+      _currentMid = t.mid;
+      keepScreenAwake(true);
+      try { await t.fn(); }
+      catch (e) { _markError(t.mid, e); }
+      finally { keepScreenAwake(false); _currentMid = null; }
+    }
+    _queueRunning = false;
+  }
+
+  // 被打断后自动恢复：锁屏/转后台/闪退都可能让转写死在半路。
+  // 回来自动接上——音频 blob 已在 IndexedDB、模型已在浏览器缓存，只需重跑转写。
+  async function resumeStuckProcessing() {
+    for (const mat of (S.materials || [])) {
+      if (mat.status !== "processing") continue; // 非进行中不打扰
+      if (mat.process_step === "done") { mat.status = "ready"; await save(); continue; }
+      if (_audioUrls[mat.id]) continue; // 已有可用音频（材料其实已就绪）
+      const blob = mat.has_audio ? await idbGet(AUDIO_KEY(mat.id)) : null;
+      if (blob) enqueueProcessing(mat.id, () => _transcribeAndBuild(mat.id, blob));
+      else if (mat.source_url) enqueueProcessing(mat.id, () => _processAudioInner(mat.id, mat.source_url));
+      else {
+        mat.status = "error"; mat.process_step = "error";
+        mat.error = "处理被中断且没有可恢复的音频，请重新导入";
+        await save();
+      }
+    }
+  }
+  // 首轮加载 & 从后台回前台各触发一次
+  loadState().then(() => setTimeout(() => { try { resumeStuckProcessing(); } catch (e) {} }, 3000));
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      setTimeout(() => { try { resumeStuckProcessing(); } catch (e) {} }, 1500);
+    }
+  });
   function nextMaterialId() {
     if (!S.seq.material) {
       const maxId = S.materials.reduce((mx, m) => Math.max(mx, m.id || 0), 0);
@@ -415,26 +486,35 @@ const DeepSpeakEngine = (() => {
   }
 
   // 下载 → 浏览器内 Whisper 转写 → 分句建单元（对齐桌面 pipeline._download_remote_audio + _asr_and_build）。
-  // 不 await（前端轮询 /materials/{id} 的 process_step/process_pct 展示进度），失败置 error。
-  async function _processAudio(mid, url) {
+  // 入处理队列：同材料去重 + 全程亮屏；失败置 error（前端轮询 /materials/{id} 看进度）。
+  function _processAudio(mid, url) {
     const mat = getMaterial(mid);
     if (!mat) return;
-    const setProg = (step, pct) => { mat.process_step = step; if (pct != null) mat.process_pct = Math.round(pct); };
-    try {
-      if (!window.dsImport) throw new Error("导入引擎未加载（import-engine.js）");
-      mat.status = "processing"; mat.error = ""; setProg("download", 5);
-      const proxy = getSetting("cors_proxy", "");
-      const blob = await window.dsImport.fetchBlob(url, proxy, (recv, total) => {
-        if (total) setProg("download", 5 + (recv / total) * 20);
-      });
-      setProg("download", 25);
-      await _transcribeAndBuild(mid, blob);
-    } catch (e) {
-      _markError(mid, e);
-    }
+    enqueueProcessing(mid, () => _processAudioInner(mid, url));
   }
 
-  // 已有 blob（本地文件 / 已存音频）→ 转写建单元
+  // 队列任务体（resume 也直接用它——队列自带去重，重复调用不会叠任务）
+  async function _processAudioInner(mid, url) {
+    const mat = getMaterial(mid);
+    if (!mat) return;
+    // 下载中断后 resume：材料可能仍在 processing 但已成功，先把状态归位再跑
+    if (!window.dsImport) throw new Error("导入引擎未加载（import-engine.js）");
+    const setProg = (step, pct) => { mat.process_step = step; if (pct != null) mat.process_pct = Math.round(pct); };
+    mat.status = "processing"; mat.error = ""; setProg("download", 5);
+    const proxy = getSetting("cors_proxy", "");
+    const blob = await window.dsImport.fetchBlob(url, proxy, (recv, total) => {
+      if (total) setProg("download", 5 + (recv / total) * 20);
+    });
+    setProg("download", 25);
+    await _transcribeAndBuild(mid, blob);
+  }
+
+  // 已有 blob 直接进转写（reprocess 复用已下载音频时走这里）
+  function _processAudioFromBlob(mid, blob) {
+    enqueueProcessing(mid, () => _transcribeAndBuild(mid, blob));
+  }
+
+  // 已有 blob（本地文件 / 已存音频 / 下载完成）→ 转写建单元。纯任务体，队列/亮屏由泵统一管。
   async function _transcribeAndBuild(mid, blob) {
     const mat = getMaterial(mid);
     if (!mat) return;
@@ -492,7 +572,7 @@ const DeepSpeakEngine = (() => {
     });
     S.units[mid] = [];
     await save();
-    _transcribeAndBuild(mid, file); // 后台转写，前端轮询
+    enqueueProcessing(mid, () => _transcribeAndBuild(mid, file)); // 后台转写，前端轮询
     return { ok: true, id: mid };
   }
 
@@ -1600,7 +1680,7 @@ const DeepSpeakEngine = (() => {
       mat.status = "processing"; mat.process_step = "preparing"; mat.process_pct = 5; mat.error = "";
       await save();
       const blob = await idbGet(AUDIO_KEY(mid));
-      if (blob) _transcribeAndBuild(mid, blob);
+      if (blob) _processAudioFromBlob(mid, blob);
       else if (mat.source_url) _processAudio(mid, mat.source_url);
       else { _markError(mid, new Error("该素材没有可重试的音频来源")); throw new Error("该素材没有可重试的音频来源"); }
       return { ok: true, message: "已重新提交，正在转写" };

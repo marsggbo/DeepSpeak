@@ -53,25 +53,67 @@
     return list;
   }
 
+  // 探测候选时给个连接超时：代理经常连不上/挂了，纯 fetch 会等浏览器级超时（几十秒）。
+  // 只限「拿到响应头」这一步，下载正文不受此限（头部 timeout 后立即 clear）。
+  async function fetchWithTimeout(url) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 12000);
+    try {
+      const r = await fetch(url, { redirect: "follow", signal: ctl.signal });
+      clearTimeout(timer);
+      return r;
+    } catch (e) {
+      clearTimeout(timer);
+      throw e;
+    }
+  }
+
   // 逐个候选尝试：直连（兼容 CORS 源）→ 用户代理 → 内置公共代理。
-  // 网络/CORS 失败才换下一条；HTTP 错误也继续下一次（代理常 502/限流），
-  // 全部失败时把试过的路径汇总成一条可读错误，方便用户对症处理。
+  // 网络/CORS 失败、HTTP 错误换下一条（代理常 502/限流）；但「返回的不是音频」是内容问题，
+  // 换代理大概率还是错误页——立即终止，把具体是哪条路径给的错误页报出来，方便对症处理。
   async function fetchChain(url, proxy, consume) {
     const reasons = [];
+    let contentFail = false;
     for (const a of proxyCandidates(proxy)) {
       try {
-        const r = await fetch(withProxy(url, a.url), { redirect: "follow" });
+        const r = await fetchWithTimeout(withProxy(url, a.url));
         if (!r.ok) { reasons.push(`${a.label} HTTP ${r.status}`); continue; }
         return await consume(r);
       } catch (e) {
-        reasons.push(`${a.label} 网络/CORS 失败`);
+        if (e && e.isContent) {
+          contentFail = true;
+          reasons.push(`${a.label} ${e.message}`);
+          break;
+        }
+        reasons.push(`${a.label} 网络/CORS/超时失败`);
       }
     }
+    const tail = "网页受浏览器跨域限制，可在设置页配置 CORS 代理后重试；" +
+      "或直接用 APK / 桌面版导入（本地请求无跨域限制）。";
     throw new Error(
-      "网络请求失败：" + reasons.join("；") +
-      "。网页受浏览器跨域限制，可在设置页配置 CORS 代理后重试；" +
-      "或直接用 APK / 桌面版导入（本地请求无跨域限制）。"
+      (contentFail ? "抓取失败：" : "网络请求失败：") + reasons.join("；") + "。" + tail
     );
+  }
+
+  function contentError(msg) {
+    const e = new Error(msg);
+    e.isContent = true;
+    return e;
+  }
+
+  // 音频文件头魔数校验（mp3 ID3/帧同步、wav RIFF、m4a ftyp、ogg、flac）。
+  // 抓回来的“音频”经常是代理偷换的错误页/HTML——这里拦在解码之前，而不是报裸的
+  // “Unable to decode audio data”。
+  function isAudioContent(buf) {
+    if (!buf || buf.length < 3) return false;
+    if (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) return true;        // ID3
+    if (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return true;                   // MPEG 帧同步
+    if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46) return true; // RIFF
+    if (buf[0] === 0x66 && buf[1] === 0x74 && buf[2] === 0x79 && buf[3] === 0x70) return true; // ftyp
+    if (buf[0] === 0x4f && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53) return true; // OggS
+    if (buf[0] === 0x66 && buf[1] === 0x4c && buf[2] === 0x61 && buf[3] === 0x43) return true; // fLaC
+    if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return true; // matroska/webm
+    return false;
   }
 
   function b64ToBlob(b64, type) {
@@ -107,21 +149,54 @@
     }
     const consume = async (r) => {
       const total = Number(r.headers.get("Content-Length") || 0);
-      if (!r.body || !total) {
+      const ctype = (r.headers.get("Content-Type") || "").toLowerCase();
+      const reader = r.body ? r.body.getReader() : null;
+      if (!reader) {
         const b = await r.blob();
         if (onProgress) onProgress(b.size, b.size || 0);
+        if (b.size < 4 || !isAudioContent(new Uint8Array(await b.slice(0, 16).arrayBuffer()))) {
+          throw contentError("返回内容不是音频（可能拿到了错误页）");
+        }
         return b;
       }
-      const reader = r.body.getReader();
       const chunks = [];
       let received = 0;
+      let sniffed = false;
+      let invalid = false;
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
         chunks.push(value);
         received += value.length;
-        if (onProgress) onProgress(received, total);
+        if (!sniffed && received >= 4) {
+          sniffed = true;
+          // 前几块拼出足够字节做魔数校验
+          let merged = chunks[0];
+          if (merged.length < 8) {
+            const tmp = new Uint8Array(received);
+            let off = 0;
+            for (const c of chunks) { tmp.set(c, off); off += c.length; }
+            merged = tmp;
+          }
+          if (isAudioContent(merged)) {
+            invalid = false;
+          } else if (ctype && ctype.startsWith("audio/")) {
+            // 类型声明是音频但魔数不对 → 内容被换过；仍交给解码兜底判定
+            invalid = false;
+          } else {
+            invalid = true;
+            break;
+          }
+        }
+        if (onProgress && total) onProgress(received, total);
       }
+      if (invalid) {
+        throw contentError(`返回内容不是音频（${(ctype || "无类型")}，可能拿到了错误页/被代理替换）`);
+      }
+      if (received < 1024) {
+        throw contentError("下载内容过小（不是有效音频）");
+      }
+      if (onProgress && !total) onProgress(received, received || 0);
       return new Blob(chunks, { type: r.headers.get("Content-Type") || "audio/mpeg" });
     };
     return fetchChain(url, proxy, consume);
@@ -353,14 +428,28 @@
 
   // 把音频 blob 解码为 16kHz 单声道 Float32Array（Whisper 输入要求）
   async function decodeAudio(blob) {
+    if (!blob || blob.size < 1024) {
+      throw new Error("音频文件过小或为空，不是有效的音频文件");
+    }
     const buf = await blob.arrayBuffer();
     const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
     const tmpCtx = new (window.AudioContext || window.webkitAudioContext)();
     let decoded;
     try {
       decoded = await tmpCtx.decodeAudioData(buf.slice(0));
+    } catch (e) {
+      throw new Error(
+        "无法解码这份音频：文件可能不是受支持的音频格式（MP3/M4A/WAV），" +
+        "或下载不完整、被代理换成了错误页。可换一集再试；或改用 APK / 桌面版导入。"
+      );
     } finally {
       if (tmpCtx.close) tmpCtx.close();
+    }
+    if (!decoded || decoded.length < 1 || decoded.duration <= 0) {
+      throw new Error(
+        "这段音频解码后是空的（文件可能被截断或不是真正的音频），" +
+        "请换一集，或改用 APK / 桌面版导入。"
+      );
     }
     const targetRate = 16000;
     const frames = Math.max(1, Math.ceil(decoded.duration * targetRate));
@@ -466,6 +555,28 @@
     return out;
   }
 
+// 首尾静音裁剪：播客/录音常带片头片尾空播（音乐/拖堂），裁掉后 Whisper 不用白跑那几十秒。
+  // 50ms 窗口 RMS < 阈值视为静音；两头各留 300ms 余量；返回裁剪样本 + 前导秒数（回补时间戳）。
+  function trimEdgeSilence(samples, rate = 16000) {
+    const win = Math.floor(rate * 0.05);
+    const th = 0.004;
+    const rms = (from, n) => {
+      let s = 0;
+      const lim = Math.min(from + n, samples.length);
+      for (let i = from; i < lim; i++) s += samples[i] * samples[i];
+      return Math.sqrt(s / Math.max(1, lim - from));
+    };
+    let first = 0;
+    while (first + win <= samples.length && rms(first, win) < th) first += win;
+    let last = samples.length;
+    while (last - win >= 0 && rms(last - win, win) < th) last -= win;
+    if (last - first < win) return { samples, leadSec: 0 }; // 整段都“静音”的异常输入不裁
+    let lo = Math.max(0, Math.floor(first - rate * 0.3));
+    let hi = Math.min(samples.length, Math.floor(last + rate * 0.3));
+    if (lo === 0 && hi === samples.length) return { samples, leadSec: 0 };
+    return { samples: samples.slice(lo, hi), leadSec: lo / rate };
+  }
+
   // transcribe：blob → [{text,start,end}]（秒）。onProgress(phase, frac, extra)
   async function transcribe(blob, opts) {
     opts = opts || {};
@@ -477,18 +588,22 @@
     const pipe = await getPipeline(model, (frac, file) => onProgress("model", frac, file));
     onProgress("decode", 0);
     const audio = await decodeAudio(blob);
+    const { samples, leadSec } = trimEdgeSilence(audio);
+    const addLead = (chunks) => chunks.map((c) => ({
+      text: c.text, start: c.start + leadSec, end: c.end + leadSec,
+    }));
     onProgress("transcribe", 0);
-    const dur = audio.length / 16000;
+    const dur = samples.length / 16000;
     if (opts.parallel !== false && dur > WINDOW_S && typeof Worker !== "undefined") {
       try {
-        const chunks = await transcribeParallel(repo, audio, onProgress);
+        const chunks = await transcribeParallel(repo, samples, onProgress);
         onProgress("transcribe", 1);
-        return chunks;
+        return addLead(chunks);
       } catch (e) {
         console.warn("并行转写失败，回退单线程:", e);
       }
     }
-    const result = await pipe(audio, {
+    const result = await pipe(samples, {
       return_timestamps: true,
       chunk_length_s: 30,
       stride_length_s: 5,
@@ -496,19 +611,19 @@
     onProgress("transcribe", 1);
     const chunks = (result && result.chunks) || [];
     if (chunks.length) {
-      return chunks.map((c) => ({
+      return addLead(chunks.map((c) => ({
         text: (c.text || "").trim(),
         start: c.timestamp && c.timestamp[0] != null ? c.timestamp[0] : 0,
         end: c.timestamp && c.timestamp[1] != null ? c.timestamp[1] : 0,
-      })).filter((c) => c.text);
+      })).filter((c) => c.text));
     }
-    return [{ text: ((result && result.text) || "").trim(), start: 0, end: 0 }];
+    return [{ text: ((result && result.text) || "").trim(), start: leadSec, end: leadSec + dur }];
   }
 
   window.dsImport = {
     isNative: () => !!cap(),
     detectKind, fetchFeed, parseRss, fetchText, fetchBlob,
     splitSentences, expandSegmentsBySentence, buildUnits, analyzeUnit,
-    transcribe, loadTransformers, detectBackend,
+    transcribe, loadTransformers, detectBackend, decodeAudio, trimEdgeSilence,
   };
 })();
