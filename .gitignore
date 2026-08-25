@@ -25,3 +25,6 @@ docs/
 .DS_Store
 .zcode/
 *.log
+
+# 浏览器端模型（fetch_js_models.py 下载，打包进 APK，不入库）
+/models-js/

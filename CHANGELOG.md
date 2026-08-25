@@ -3,6 +3,16 @@
 DeepSpeak 变更记录。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.2.3] - 2026-08-23
+
+### 新增
+- **APK 内置识别模型与推理内核（识别全程离线，不再下载）**：whisper tiny.en + base.en 两个量化模型（~280MB）连同 transformers.js 库、onnxruntime 的 WASM 内核一起打进安装包，存于 `/models/` + `/vendor/`，APK 导入音频转写不再联网、不再「下载识别模型卡 25%」（此前模型从 huggingface.co/镜像下载，大陆网络经常长时间卡进度条）；网页版（无内置模型）行为不变，仍自动回退远程下载 + Cache API 缓存。桌面版不受影响（用的是后端 faster-whisper）
+- **onnxruntime wasm 路径本地化**：库加载顺序改为 本地 vendor → jsdelivr → unpkg，APK 内连 WASM 内核都自带（此前内核也要从 jsdelivr 拉）
+- `scripts/fetch_js_models.py`：一键下载内置模型（`--check` 校验完整性；`--host hf-mirror.com` 走镜像），模型文件不入 git（`models-js/` 已 gitignore）；APK 构建时 `cap sync` 后拷入 assets
+
+### 测试
+- `tests/e2e_offline_models.py`：headless 冒烟——本地 `/models/` 可达、真实 pipeline 构建 + 推理成功、**断言全程零外网请求**（huggingface/jsdelivr/unpkg/hf-mirror 全部为零），验证的就是 APK 的离线链路
+
 ## [0.2.2] - 2026-08-23
 
 ### 新增

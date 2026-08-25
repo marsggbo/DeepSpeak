@@ -44,6 +44,8 @@ function chunkWords(chunk) {
 
 let _pipe = null;
 const TX_CDNS = [
+  // 本地 vendor 优先（与 APK 一起打包，离线可用）；失败再走 CDN 兜底
+  "./vendor/transformers@2.17.2.js",
   "https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2",
   "https://unpkg.com/@xenova/transformers@2.17.2",
 ];
@@ -51,11 +53,17 @@ const TX_CDNS = [
 async function getPipeline(repo) {
   if (_pipe) return _pipe;
   let lastErr = null;
-  for (const cdn of TX_CDNS) {
+  for (let i = 0; i < TX_CDNS.length; i++) {
+    const cdn = TX_CDNS[i];
     try {
       const tx = await import(cdn);
-      tx.env.allowLocalModels = false;
+      tx.env.allowLocalModels = true; // APK 内置模型直接本地读；无本地文件自动回退远程
+      tx.env.localModelPath = "/models/";
       tx.env.useBrowserCache = true; // 模型文件走 Cache API，主线程下载过即命中
+      if (i === 0) {
+        // 本地 vendor：onnxruntime wasm 内核随包提供（库默认指向 jsdelivr，离线会挂）
+        tx.env.backends.onnx.wasm.wasmPaths = "./vendor/";
+      }
       _pipe = await tx.pipeline("automatic-speech-recognition", repo, { device: "wasm" });
       return _pipe;
     } catch (e) {

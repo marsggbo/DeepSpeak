@@ -491,8 +491,10 @@
     "base.en": "Xenova/whisper-base.en",
   };
   const TX_CDNS = [
+    // 本地 vendor 优先（与 APK 一起打包，离线可用）；失败再走 CDN 兜底。
     // v2 系列（@xenova/transformers）：纯 WASM 起步，WebGPU 仅显式请求才启用，
     // 安卓 WebView 无 GPU adapter 时回退干净（v3.0.x 在 device 选择上有缺陷会崩）
+    "./vendor/transformers@2.17.2.js",
     "https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2",
     "https://unpkg.com/@xenova/transformers@2.17.2",
   ];
@@ -502,11 +504,19 @@
   async function loadTransformers() {
     if (_tx) return _tx;
     let lastErr = null;
-    for (const cdn of TX_CDNS) {
+    for (let i = 0; i < TX_CDNS.length; i++) {
+      const cdn = TX_CDNS[i];
       try {
         _tx = await import(/* @vite-ignore */ cdn);
-        _tx.env.allowLocalModels = false;
+        // 允许读本机 /models/（APK 内置模型直接本地加载，不再联网下载）；
+        // 无本地文件时自动回退远程下载（网页版行为不变）。
+        _tx.env.allowLocalModels = true;
+        _tx.env.localModelPath = "/models/";
         _tx.env.useBrowserCache = true; // 模型文件用浏览器 Cache API 缓存，二次离线可用
+        if (i === 0) {
+          // 本地 vendor：onnxruntime 的 wasm 内核也随包提供（库默认指向 jsdelivr，离线会挂）
+          _tx.env.backends.onnx.wasm.wasmPaths = "./vendor/";
+        }
         return _tx;
       } catch (e) { lastErr = e; }
     }
