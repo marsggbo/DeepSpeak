@@ -3,6 +3,16 @@
 DeepSpeak 变更记录。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.2.0] - 2026-08-25
+
+### 修复
+- **逐句音频三端一致（双引擎契约化）**：导入材料（RSS / 音频文件）的逐句播放此前在 APK / 网页上会"一句播完不收、直接播到下一句"——本地引擎对导入素材始终下发 `kind:"file"`（start/end 被忽略，播放整段）；桌面端一直是 `kind:"range"`。现统一走双端共享契约 `backend/audio_contract.py` ↔ `frontend/audio-contract.js`（`resolve_unit_range`：end 缺失→截到下一句起点，仍没有→按词数 `max(1500, n×420)` 估时长），两端永远算出同一个区间；`tests/audio_contract_check.py` 对 Python 与 Node 两侧跑同一用例矩阵（13 例全绿）作为回归闸门，改一端必须同步另一端
+- **切换步骤音频立即停止**：单元强化步骤切换（下一步 / 跳步骤 / 红笔校对）与整段精听阶段推进现在会先停掉正在播放的音频（此前只有切换页面才停）；同一步内的"再听一遍"等操作不受影响
+- **网页版导入更可靠 + 可诊断**：抓取 RSS / 音频改为失败回退链——直连（源站开了 CORS / 同源）→ 设置里填的代理 → 内置公共代理（allorigins / corsproxy.io / codetabs），失败原因按每一条路径逐条列出（如"直连 网络/CORS 失败；内置代理 2 HTTP 413"），不再是无从下手的笼统报错；Whisper 识别模型官方源（huggingface.co）下载失败自动切换 hf-mirror.com 镜像。说明：免费公共代理不稳定，跨域素材在网页端是尽力而为；APK（原生请求无 CORS）与桌面版无此限制
+
+### 新增
+- **双引擎一致性测试工具**：`tests/audio_contract_check.py`（Python ↔ Node 契约回归）、`tests/e2e_import_audio.py`（headless 浏览器完整跑 RSS 导入→下载→转写→逐句音频断言，转写打桩避免拉模型）
+
 ## [Unreleased]
 
 ### 新增

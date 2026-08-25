@@ -26,7 +26,7 @@ from . import audio_contract, builtin, db, diffing, extract, focus, generate, im
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_DIR = paths.frontend_dir()
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 AUDIO_MIME = {
     ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".wav": "audio/wav", ".aiff": "audio/aiff",
