@@ -585,6 +585,29 @@ const DeepSpeakEngine = (() => {
     return `assets/audio/full_${mid}.wav`;
   }
 
+  // 单元音频（与桌面 server.py _unit_audio 走同一契约 backend/audio_contract.py）
+  // 文本材料 → 句级 TTS；内置 → 每句独立 wav；导入材料 → 整段 blob + start/end 范围裁剪，
+  // 保证逐句播放永远只播本句，而不是越句继续往后放。
+  function unitAudioFor(u) {
+    const mat = getMaterial(u.material_id);
+    if (mat && mat.media_type === "text") return { url: "", kind: "tts", text: u.text };
+    if (!isImported(mat)) return { url: unitAudioUrl(u.material_id, u.id), start_ms: 0, end_ms: 0, kind: "file" };
+    let nextStart = 0;
+    if (!u.end_ms || u.end_ms <= (u.start_ms || 0)) {
+      const nxt = (S.units[u.material_id] || [])
+        .filter((x) => x.seq > u.seq && (x.start_ms || 0) > 0)
+        .sort((a, b) => a.seq - b.seq)[0];
+      nextStart = nxt ? nxt.start_ms : 0;
+    }
+    const { start_ms, end_ms } = window.dsAudioContract.resolveUnitRange(
+      u.start_ms || 0, u.end_ms || 0, u.text, nextStart
+    );
+    return {
+      url: unitAudioUrl(u.material_id, u.id),
+      start_ms, end_ms, kind: "range", duration_ms: mat.duration_ms || 0,
+    };
+  }
+
   // ================= 单元 JSON（对齐 _unit_json / unit_progress） =================
   function unitJson(uid) {
     const u = getUnit(uid);
@@ -603,12 +626,7 @@ const DeepSpeakEngine = (() => {
         label: e.meaning || "", variants: e.variants || [], source: e.source || "rule",
       })),
       explanation: "",
-      // 文本导入材料：无静态音频，播放时按句 Kokoro 合成（kind:"tts"）
-      audio: mat && mat.media_type === "text"
-        ? { url: "", kind: "tts", text: u.text }
-        : imported
-          ? { url: unitAudioUrl(u.material_id, uid), start_ms: u.start_ms || 0, end_ms: u.end_ms || 0, kind: "file" }
-          : { url: unitAudioUrl(u.material_id, uid), start_ms: 0, end_ms: 0, kind: "file" },
+      audio: unitAudioFor(u),
     };
   }
 
@@ -636,9 +654,7 @@ const DeepSpeakEngine = (() => {
       units: units.map((u) => ({
         id: u.id, seq: u.seq, text: u.text, status: u.status, scene: u.scene,
         difficulty: u.difficulty, learning_value: u.learning_value,
-        audio: mat.media_type === "text"
-          ? { url: "", kind: "tts", text: u.text }
-          : { url: unitAudioUrl(mid, u.id), start_ms: imported ? (u.start_ms || 0) : 0, end_ms: imported ? (u.end_ms || 0) : 0, kind: "file" },
+        audio: unitAudioFor(u),
       })),
       unit_total: units.length, unit_done: done, unit_mastered: mastered,
       unit_stats: { total: units.length, done, mastered },

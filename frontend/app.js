@@ -1463,6 +1463,7 @@ async function renderStudio(u, opts) {
 }
 
 async function showStep(key) {
+  stopPlay(); // 切换步骤即停掉上一页/上一句的音频（含导入材料的长音频）
   if (studioCtx) studioCtx.currentStep = key;
   updateStepBar(key);
   const u = studioCtx.unit;
@@ -2442,8 +2443,11 @@ async function jumpFocusStep(targetKey) {
 
 async function focusAct(action) {
   try {
+    const prevStep = focusStepForStatus(focusCtx.focus.status);
     const { focus } = await api(`/api/materials/${focusCtx.mid}/focus`, { method: "POST", body: { action } });
     focusCtx.focus = focus;
+    // 状态推进/回退发生（换了步骤）才停音频；同一步内的动作不影响正在播放
+    if (focusStepForStatus(focus.status) !== prevStep) stopPlay();
     renderFocusBody();
   } catch (e) {
     toast(e.message || "操作失败，请重试", "error");
@@ -2695,6 +2699,7 @@ function renderProofReconstruct(diff, mode) {
 }
 
 function renderFocusProof() {
+  stopPlay(); // 进入校对：停掉听写播放中的句子（长音频已发酵至下一句）
   const panel = $("#focus-panel");
   const units = focusCtx.material.units;
   const wrongWords = [];

@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import ai as ai_mod
 from . import asr as asr_mod
-from . import builtin, db, diffing, extract, focus, generate, importers, paths, pipeline, review, textproc, tts, wordbank
+from . import audio_contract, builtin, db, diffing, extract, focus, generate, importers, paths, pipeline, review, textproc, tts, wordbank
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_DIR = paths.frontend_dir()
@@ -126,18 +126,18 @@ def _unit_audio_info(unit_id):
     if mat and mat["is_builtin"]:
         return {"url": f"/api/audio/unit/{unit_id}.wav", "start_ms": 0, "end_ms": 0, "kind": "file"}
     if src and src["file_path"] and os.path.exists(src["file_path"]):
-        start = u["start_ms"] or 0
-        end = u["end_ms"] or 0
-        # 兜底：end 缺失/非法时用下一句起点，最后一句按词数估时长，保证逐句播放有截断
-        if end <= start:
+        # 逐句区间走双端共享契约（audio_contract）：
+        # end 缺失/非法 → 截到下句起点；最后一句按词数估时长，保证永远有截断。
+        next_start = 0
+        if not u["end_ms"] or u["end_ms"] <= (u["start_ms"] or 0):
             nxt = db.query_one(
                 "SELECT start_ms FROM training_units WHERE material_id=? AND seq>? AND start_ms>0 ORDER BY seq LIMIT 1",
                 (u["material_id"], u["seq"]),
             )
-            if nxt and nxt["start_ms"] > start:
-                end = nxt["start_ms"]
-            else:
-                end = start + max(1500, len(u["text"].split()) * 420)
+            next_start = nxt["start_ms"] if nxt else 0
+        start, end = audio_contract.resolve_unit_range(
+            u["start_ms"], u["end_ms"], u["text"], next_start
+        )
         return {
             "url": f"/api/audio/material/{u['material_id']}",
             "start_ms": start, "end_ms": end,

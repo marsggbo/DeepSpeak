@@ -25,7 +25,7 @@
     return P || C.CapacitorHttp || null;
   }
 
-  // 网页跨域代理：{proxy}URL 形式拼接（末尾带 = 或 ? 的代理直接前缀拼原始 URL）。
+  // 网页跨域抓取：{proxy}URL 形式拼接（末尾带 = 或 ? 的代理直接前缀拼原始 URL）。
   function withProxy(url, proxy) {
     if (!proxy) return url;
     proxy = proxy.trim();
@@ -34,6 +34,44 @@
     if (/[?&=]$/.test(proxy)) return proxy + encodeURIComponent(url);
     if (proxy.endsWith("/")) return proxy + url;
     return proxy + "/" + url;
+  }
+
+  // 网页侧公共代理兜底链（用户不填也有一条路；APK 原生请求不走这里）。
+  // 注意：这些是第三方服务——RSS 与音频会经过对应站点，设置页有说明。
+  const BUILTIN_PROXIES = [
+    "https://api.allorigins.win/raw?url=",
+    "https://corsproxy.io/?url=",
+    "https://api.codetabs.com/v1/proxy?quest=",
+  ];
+
+  function proxyCandidates(proxy) {
+    const list = [{ url: null, label: "直连" }];
+    if (proxy && proxy.trim()) list.push({ url: proxy.trim(), label: "你的代理" });
+    BUILTIN_PROXIES.forEach((p, i) => {
+      if (!list.some((a) => a.url === p)) list.push({ url: p, label: "内置代理 " + (i + 1) });
+    });
+    return list;
+  }
+
+  // 逐个候选尝试：直连（兼容 CORS 源）→ 用户代理 → 内置公共代理。
+  // 网络/CORS 失败才换下一条；HTTP 错误也继续下一次（代理常 502/限流），
+  // 全部失败时把试过的路径汇总成一条可读错误，方便用户对症处理。
+  async function fetchChain(url, proxy, consume) {
+    const reasons = [];
+    for (const a of proxyCandidates(proxy)) {
+      try {
+        const r = await fetch(withProxy(url, a.url), { redirect: "follow" });
+        if (!r.ok) { reasons.push(`${a.label} HTTP ${r.status}`); continue; }
+        return await consume(r);
+      } catch (e) {
+        reasons.push(`${a.label} 网络/CORS 失败`);
+      }
+    }
+    throw new Error(
+      "网络请求失败：" + reasons.join("；") +
+      "。网页受浏览器跨域限制，可在设置页配置 CORS 代理后重试；" +
+      "或直接用 APK / 桌面版导入（本地请求无跨域限制）。"
+    );
   }
 
   function b64ToBlob(b64, type) {
@@ -52,9 +90,7 @@
       if (res.status >= 400) throw new Error(`网络请求失败 HTTP ${res.status}`);
       return typeof res.data === "string" ? res.data : String(res.data || "");
     }
-    const r = await fetch(withProxy(url, proxy), { redirect: "follow" });
-    if (!r.ok) throw new Error(`网络请求失败 HTTP ${r.status}（跨域源可能需要在设置里配置 CORS 代理）`);
-    return await r.text();
+    return fetchChain(url, proxy, (r) => r.text());
   }
 
   // ---------- 网络：二进制（音频） ----------
@@ -69,25 +105,26 @@
       if (onProgress) onProgress(1, 1);
       return b64ToBlob(res.data, type);
     }
-    const r = await fetch(withProxy(url, proxy), { redirect: "follow" });
-    if (!r.ok) throw new Error(`音频下载失败 HTTP ${r.status}（跨域源可能需要 CORS 代理）`);
-    const total = Number(r.headers.get("Content-Length") || 0);
-    if (!r.body || !total) {
-      const b = await r.blob();
-      if (onProgress) onProgress(b.size, b.size || 0);
-      return b;
-    }
-    const reader = r.body.getReader();
-    const chunks = [];
-    let received = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      received += value.length;
-      if (onProgress) onProgress(received, total);
-    }
-    return new Blob(chunks, { type: r.headers.get("Content-Type") || "audio/mpeg" });
+    const consume = async (r) => {
+      const total = Number(r.headers.get("Content-Length") || 0);
+      if (!r.body || !total) {
+        const b = await r.blob();
+        if (onProgress) onProgress(b.size, b.size || 0);
+        return b;
+      }
+      const reader = r.body.getReader();
+      const chunks = [];
+      let received = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.length;
+        if (onProgress) onProgress(received, total);
+      }
+      return new Blob(chunks, { type: r.headers.get("Content-Type") || "audio/mpeg" });
+    };
+    return fetchChain(url, proxy, consume);
   }
 
   // ---------- RSS 类型识别（对齐 importers.detect_kind） ----------
@@ -291,13 +328,25 @@
         }
       },
     };
-    let pipe;
+    // 官方源下载失败（大陆网络常见）→ 自动切 hf-mirror.com 镜像；
+    // WebGPU 不稳（安卓 WebView 常见）→ 回退 WASM。两个维度穷举。
+    let pipe = null, lastErr = null;
+    const prevHost = tx.env.remoteHost;
     try {
-      pipe = await tx.pipeline("automatic-speech-recognition", repo, { ...opts, device });
-    } catch (e) {
-      // WebGPU 不稳（安卓 WebView 常见）→ 回退 WASM
-      pipe = await tx.pipeline("automatic-speech-recognition", repo, { ...opts, device: "wasm" });
+      for (const host of [null, "https://hf-mirror.com"]) {
+        if (host) tx.env.remoteHost = host;
+        for (const dev of [device, "wasm"]) {
+          try {
+            pipe = await tx.pipeline("automatic-speech-recognition", repo, { ...opts, device: dev });
+            break;
+          } catch (e) { lastErr = e; }
+        }
+        if (pipe) break;
+      }
+    } finally {
+      tx.env.remoteHost = prevHost;
     }
+    if (!pipe) throw new Error("语音识别模型下载失败：" + String((lastErr && lastErr.message) || lastErr) + "。请检查网络（模型来自 huggingface.co / hf-mirror.com）");
     _pipes[repo] = pipe;
     return pipe;
   }
