@@ -1,6 +1,6 @@
 {
   "name": "deepspeak-desktop",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "DeepSpeak 桌面壳：Electron + 内置 Python 后端（whisper ASR + Kokoro TTS，全离线）",
   "main": "main.js",
   "private": true,

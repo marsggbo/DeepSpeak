@@ -284,7 +284,129 @@
     return m ? m.length : 0;
   }
 
-  // 移植 textproc.expand_segments_by_sentence：ASR chunk 按终止标点拆句、时间按词数比例分配
+  // ===== 句子时间线：跨窗口词流缝合 + 词级时间戳切分（保证“一句话=一个单元、时间跟着词走”） =====
+  // 背景：whisper 按 30s 窗口独立转写，窗口边界常把句子拦腰截断（上一块结尾挂着逗号/半句）。
+  // 旧的“逐窗口→按句切”会把这些残句当成完整句子 → 用户看到“以逗号断句”。
+  // 正解：窗口间无损拼接（词级时间戳），只在真正句终（. ? !，且豁免 Mr./U.S./3.5 类缩写）
+  // 收束一句；句子的 start/end 直接取首词/末词的时间戳（不再按词数猜时间）。
+  // 拿不到词级时间戳时兜底：先把残句跨窗口合并，再按词数比例分配时间。
+  function chunkWords(chunk) {
+    const text = (chunk.text || "").trim();
+    const ts = chunk.timestamps;
+    if (!Array.isArray(ts) || !ts.length) return null;
+    const toks = text.split(/\s+/);
+    if (toks.length !== ts.length) return null;
+    const out = [];
+    for (let i = 0; i < toks.length; i++) {
+      const a = ts[i];
+      if (!Array.isArray(a) || a[0] == null || a[1] == null) return null;
+      out.push({ w: toks[i], s: a[0], e: a[1] });
+    }
+    return out;
+  }
+
+  function isSentenceEnd(w) {
+    let core = String(w || "").trim();
+    if (!core) return false;
+    if (/^[.!?…]+["'”’)\]]*$/.test(core)) return true; // 独立标点 token
+    const last = core[core.length - 1];
+    if (last !== "." && last !== "!" && last !== "?" && last !== "…") return false;
+    core = core.slice(0, -1).replace(/["'”’)\]]+$/, "").trim();
+    if (!core) return false;
+    if (/\b(Mr|Mrs|Ms|Dr|Prof|St|Sr|Jr|vs|etc|e\.g|i\.e|approx|min|max|hr|sec|oz|lb|kg|ft|in|cm|mm)$/i.test(core)) return false;
+    if (/\d+\.\d+$/.test(core)) return false;           // 3.5 / 编号 19.1
+    if (/^[A-Za-z]$/.test(core)) return false;          // 首字母缩写 U.
+    if (/^[A-Za-z]\.[A-Za-z]$/.test(core)) return false; // 缩写 U.S. / E.T.
+    return true;
+  }
+
+  function endsSentenceEnd(text) {
+    const toks = String(text || "").trim().split(/\s+/);
+    return toks.length ? isSentenceEnd(toks[toks.length - 1]) : false;
+  }
+
+  function wordsToText(words) {
+    return words
+      .map((x) => x.w)
+      .join(" ")
+      .replace(/\s+([,.;:!?…])/g, "$1")
+      .replace(/\s+(["'”’)\]]+)\s*$/g, "$1");
+  }
+
+  function cleanSentenceText(t) {
+    let p = String(t || "").trim();
+    p = p.replace(/^["'“”‘’]+|["'“”‘’]+$/g, "");
+    p = p.replace(START_NOISE, "").trim();
+    p = p.replace(END_NOISE, "").trim();
+    return p;
+  }
+
+  // 词级切句：整个音频的词和词的时间戳铺成一条流，遇句界收束
+  function cutByWords(words) {
+    const out = [];
+    let cur = [];
+    for (let i = 0; i < words.length; i++) {
+      cur.push(words[i]);
+      if (isSentenceEnd(words[i].w) || i === words.length - 1) {
+        const text = cleanSentenceText(wordsToText(cur));
+        if (text) {
+          const first = cur.find((x) => x.s != null && x.e != null) || {};
+          const last = [...cur].reverse().find((x) => x.s != null && x.e != null) || first;
+          out.push({ text, start: first.s || 0, end: last.e || last.s || 0 });
+        }
+        cur = [];
+      }
+    }
+    return out;
+  }
+
+  // 无词级时间戳兜底：先跨窗口缝合残句，再按句切分、词数比例分配时间
+  function splitByTextSegments(segments) {
+    const merged = [];
+    let buf = null;
+    for (const s of segments || []) {
+      const text = (s.text || "").trim();
+      if (!text) continue;
+      if (buf && !endsSentenceEnd(buf.text)) {
+        buf.text += " " + text;
+        if (s.end != null) buf.end = s.end;
+      } else {
+        if (buf) merged.push(buf);
+        buf = { text, start: s.start || 0, end: s.end || 0 };
+      }
+    }
+    if (buf) merged.push(buf);
+    const out = [];
+    for (const m of merged) {
+      const subs = splitSentences(m.text);
+      if (!subs.length) continue;
+      if (subs.length === 1) { out.push({ text: subs[0], start: m.start, end: m.end }); continue; }
+      const weights = subs.map((x) => wordCount(x) || 1);
+      const total = weights.reduce((a, b) => a + b, 0);
+      let cur = m.start;
+      subs.forEach((x, i) => {
+        const span = (m.end - m.start) * weights[i] / total;
+        out.push({ text: x, start: Math.round(cur * 1000) / 1000, end: Math.round((cur + span) * 1000) / 1000 });
+        cur += span;
+      });
+    }
+    return out;
+  }
+
+  function sentenceTimeline(segments) {
+    const words = [];
+    let allWordLevel = true;
+    for (const s of segments || []) {
+      if (Array.isArray(s.words) && s.words.length && s.words.every((x) => x && x.w != null && x.s != null && x.e != null)) {
+        words.push(...s.words);
+      } else {
+        allWordLevel = false;
+      }
+    }
+    return allWordLevel && words.length ? cutByWords(words) : splitByTextSegments(segments);
+  }
+
+  // 移植 textproc.expand_segments_by_sentence：ASR chunk 按终止标点拆句、时间按词数比例分配（兜底路径用）
   function expandSegmentsBySentence(segments) {
     const out = [];
     for (const s of segments) {
@@ -342,9 +464,9 @@
     return { scene: "", difficulty, learning_value: learningValue(text, difficulty), expressions: [] };
   }
 
-  // buildUnits：expand → analyze → 产出 engine.js 单元结构（ms 时间戳）
+  // buildUnits：词级时间线切句 → analyze → 产出 engine.js 单元结构（ms 时间戳）
   function buildUnits(segments) {
-    const timed = expandSegmentsBySentence(segments);
+    const timed = sentenceTimeline(segments);
     const units = [];
     timed.forEach((t, i) => {
       const ana = analyzeUnit(t.text);
@@ -590,7 +712,10 @@
     const audio = await decodeAudio(blob);
     const { samples, leadSec } = trimEdgeSilence(audio);
     const addLead = (chunks) => chunks.map((c) => ({
-      text: c.text, start: c.start + leadSec, end: c.end + leadSec,
+      text: c.text,
+      start: c.start + leadSec,
+      end: c.end + leadSec,
+      words: c.words ? c.words.map((x) => ({ w: x.w, s: x.s + leadSec, e: x.e + leadSec })) : null,
     }));
     onProgress("transcribe", 0);
     const dur = samples.length / 16000;
@@ -611,13 +736,17 @@
     onProgress("transcribe", 1);
     const chunks = (result && result.chunks) || [];
     if (chunks.length) {
-      return addLead(chunks.map((c) => ({
-        text: (c.text || "").trim(),
-        start: c.timestamp && c.timestamp[0] != null ? c.timestamp[0] : 0,
-        end: c.timestamp && c.timestamp[1] != null ? c.timestamp[1] : 0,
-      })).filter((c) => c.text));
+      return addLead(chunks.map((c) => {
+        const s0 = c.timestamp && c.timestamp[0] != null ? c.timestamp[0] : 0;
+        const e0 = c.timestamp && c.timestamp[1] != null ? c.timestamp[1] : 0;
+        return {
+          text: (c.text || "").trim(),
+          start: s0, end: e0,
+          words: chunkWords(c),
+        };
+      }).filter((c) => c.text));
     }
-    return [{ text: ((result && result.text) || "").trim(), start: leadSec, end: leadSec + dur }];
+    return [{ text: ((result && result.text) || "").trim(), start: leadSec, end: leadSec + dur, words: null }];
   }
 
   window.dsImport = {

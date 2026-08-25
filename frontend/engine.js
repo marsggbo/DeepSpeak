@@ -428,6 +428,7 @@ const DeepSpeakEngine = (() => {
   function enqueueProcessing(mid, fn) {
     if (_currentMid === mid || _queue.some((t) => t.mid === mid)) return; // 同材料已有任务
     _queue.push({ mid, fn });
+    emitQueueChanged();
     pumpQueue();
   }
 
@@ -438,11 +439,41 @@ const DeepSpeakEngine = (() => {
       const t = _queue.shift();
       _currentMid = t.mid;
       keepScreenAwake(true);
+      emitQueueChanged();
       try { await t.fn(); }
       catch (e) { _markError(t.mid, e); }
-      finally { keepScreenAwake(false); _currentMid = null; }
+      finally { keepScreenAwake(false); _currentMid = null; emitQueueChanged(); }
     }
     _queueRunning = false;
+  }
+
+  // ---- 队列快照：任务页/角标用（含正在跑 + 排队中，按执行顺序）----
+  const _queueCbs = [];
+  function queueSnapshot() {
+    const snap = (mat, queued) => ({
+      id: mat.id, title: mat.title || "未命名", status: mat.status || "",
+      step: mat.process_step || (queued ? "queued" : ""), pct: mat.process_pct || 0,
+      error: mat.error || "", queued,
+    });
+    const out = [];
+    const cur = _currentMid != null ? getMaterial(_currentMid) : null;
+    if (cur) out.push(snap(cur, false));
+    for (const t of _queue) {
+      const mat = getMaterial(t.mid);
+      if (mat) out.push(snap(mat, true));
+    }
+    return out;
+  }
+  function emitQueueChanged() {
+    const s = queueSnapshot();
+    for (const f of _queueCbs) { try { f(s); } catch (e) { /* ignore */ } }
+    try {
+      window.dispatchEvent(new CustomEvent("ds-queue-update", { detail: s }));
+    } catch (e) { /* 非浏览器环境（测试）忽略 */ }
+  }
+  function onQueueChange(cb) {
+    _queueCbs.push(cb);
+    return () => { const i = _queueCbs.indexOf(cb); if (i >= 0) _queueCbs.splice(i, 1); };
   }
 
   // 被打断后自动恢复：锁屏/转后台/闪退都可能让转写死在半路。
@@ -499,7 +530,7 @@ const DeepSpeakEngine = (() => {
     if (!mat) return;
     // 下载中断后 resume：材料可能仍在 processing 但已成功，先把状态归位再跑
     if (!window.dsImport) throw new Error("导入引擎未加载（import-engine.js）");
-    const setProg = (step, pct) => { mat.process_step = step; if (pct != null) mat.process_pct = Math.round(pct); };
+    const setProg = (step, pct) => { mat.process_step = step; if (pct != null) mat.process_pct = Math.round(pct); emitQueueChanged(); };
     mat.status = "processing"; mat.error = ""; setProg("download", 5);
     const proxy = getSetting("cors_proxy", "");
     const blob = await window.dsImport.fetchBlob(url, proxy, (recv, total) => {
@@ -518,7 +549,7 @@ const DeepSpeakEngine = (() => {
   async function _transcribeAndBuild(mid, blob) {
     const mat = getMaterial(mid);
     if (!mat) return;
-    const setProg = (step, pct) => { mat.process_step = step; if (pct != null) mat.process_pct = Math.round(pct); };
+    const setProg = (step, pct) => { mat.process_step = step; if (pct != null) mat.process_pct = Math.round(pct); emitQueueChanged(); };
     try {
       if (!window.dsImport) throw new Error("导入引擎未加载（import-engine.js）");
       await storeAudioBlob(mid, blob);
@@ -557,6 +588,7 @@ const DeepSpeakEngine = (() => {
     mat.error = String((e && e.message) || e);
     mat.description = `处理失败：${mat.error}。可换一集，或在桌面版导入。`;
     try { save(); } catch (e2) {}
+    emitQueueChanged();
   }
 
   // 本地文件导入（app.js 直接调用，绕过 api 的 formData 限制）
@@ -1952,7 +1984,8 @@ const DeepSpeakEngine = (() => {
     return window.dsTts.synthesize(text, v, r, onProgress);
   }
 
-  return { api, ready: loadState, fullAudioUrl, importLocalFile, ttsSynthesize };
+  return { api, ready: loadState, fullAudioUrl, importLocalFile, ttsSynthesize,
+           tasksSnapshot: queueSnapshot, onQueueChange };
 })();
 
 // 浏览器全局挂载（const 不会自动成为 window 属性）

@@ -339,6 +339,7 @@ const routes = {
   "#/focus/": viewFocus,
   "#/unit/": viewUnit,
   "#/review": viewReview,
+  "#/tasks": viewTasks,
   "#/stats": viewStats,
   "#/settings": viewSettings,
   "#/generate": viewGenerate,
@@ -356,7 +357,7 @@ async function router() {
   const isToday = hash === "#/" || hash === "#" || hash === "";
   $$(".nav-item").forEach(a => {
     // 今日必须精确匹配（"#/" 前缀会吞掉所有路由，导致今日永远高亮）
-    const prefix = { today: "#/", materials: "#/materials", review: "#/review", stats: "#/stats", settings: "#/settings" }[a.dataset.nav] || "#/";
+    const prefix = { today: "#/", materials: "#/materials", review: "#/review", tasks: "#/tasks", stats: "#/stats", settings: "#/settings" }[a.dataset.nav] || "#/";
     const on = a.dataset.nav === "today" ? isToday : hash.startsWith(prefix);
     a.classList.toggle("active", on);
   });
@@ -377,13 +378,38 @@ async function router() {
     view.innerHTML = `<div class="empty"><div class="big">😵</div><div>${esc(e.message)}</div></div>`;
   }
   updateReviewBadge();
+  updateTaskBadge();
 }
+
+// 队列状态变化（本地引擎）：角标实时更新；正在任务页时重绘列表
+window.addEventListener("ds-queue-update", () => {
+  updateTaskBadge();
+  const t = $("#task-list");
+  if (t) renderTaskList(t);
+});
 
 async function updateReviewBadge() {
   try {
     const t = await api("/api/today");
     const b = $("#nav-review-badge");
     if (t.review_due > 0) { b.textContent = t.review_due; b.classList.remove("hidden"); }
+    else b.classList.add("hidden");
+  } catch (e) { /* ignore */ }
+}
+
+// 处理队列角标：本地引擎取队列快照；带后端的桌面模式退回按 materials 的 processing 计数
+function updateTaskBadge() {
+  const b = $("#nav-task-badge");
+  try {
+    const eng = useLocalEngine();
+    let n = 0;
+    if (eng && eng.tasksSnapshot) n = eng.tasksSnapshot().length;
+    if (!n) {
+      // 桌面模式：未完成的处理任务在 materials 上也是 processing
+      const cards = $$(".mat-card[data-processing]");
+      n = cards.length;
+    }
+    if (n > 0) { b.textContent = n; b.classList.remove("hidden"); }
     else b.classList.add("hidden");
   } catch (e) { /* ignore */ }
 }
@@ -707,6 +733,7 @@ function matGroup(m) {
   return "todo";
 }
 
+let _matPollTimer = null; // 材料页“处理中”自动刷新定时器（模块级，页面切换不残留）
 async function viewMaterials() {
   let materials = (await api("/api/materials")).materials;
   const v = $("#view");
@@ -775,9 +802,11 @@ async function viewMaterials() {
       const tags = (m.tags || "").split(",").map(t => t.trim()).filter(Boolean);
       const [e, l] = SRC_LABEL[m.source_type] || ["📄", m.source_type || ""];
       return `
-      <div class="card mat-card hover">
+      <div class="card mat-card hover" ${m.status === "processing" ? 'data-processing="1"' : ""}>
         <div class="mat-meta">
           ${m.is_builtin ? `<span class="badge builtin">内置</span>` : ""}
+          ${m.status === "processing" ? `<span class="chip" style="color:var(--accent2)">⏳ ${esc(PROCESS_STEP_LABELS[m.process_step] || "处理中")}${m.process_pct > 0 ? " " + Math.round(m.process_pct) + "%" : ""}</span>` : ""}
+          ${m.status === "error" ? `<span class="chip" style="color:var(--danger)">⚠️ 处理失败</span>` : ""}
           <span class="chip">${m.scene_emoji} ${esc(m.scene_label)}</span>
           <span class="chip gray">${e} ${l}</span>
           <span class="chip gray">${m.unit_total} 句</span>
@@ -830,6 +859,20 @@ async function viewMaterials() {
     st = setTimeout(() => { filter.q = e.target.value.trim(); render(); }, 200);
   });
   render();
+  // 有任务在处理时自动刷新列表（下载完/转写完卡片状态会自己变）；离开页面停止
+  if (_matPollTimer) { clearInterval(_matPollTimer); _matPollTimer = null; }
+  if (materials.some((m) => m.status === "processing")) {
+    _matPollTimer = setInterval(async () => {
+      if (!location.hash.startsWith("#/materials")) { clearInterval(_matPollTimer); _matPollTimer = null; return; }
+      let fresh;
+      try { fresh = (await api("/api/materials")).materials; } catch (e) { return; }
+      const sig = (x) => `${x.id}|${x.status}|${x.process_step}|${x.process_pct}|${x.unit_total}|${x.title}`;
+      if (JSON.stringify(fresh.map(sig)) !== JSON.stringify(materials.map(sig))) {
+        materials = fresh;
+        render();
+      }
+    }, 3000);
+  }
 }
 
 function importModal() {
@@ -938,8 +981,8 @@ function importModal() {
     try {
       const r = await reqFn();
       const mid = r.id;
-      // 轮询直到就绪或出错，实时显示步骤与百分比
-      for (let i = 0; i < 300; i++) {
+      // 轮询直到就绪或出错，实时显示步骤与百分比（长音频 + 慢设备转写可能几十分钟，上限放宽到 2 小时）
+      for (let i = 0; i < 7200; i++) {
         await new Promise(r2 => setTimeout(r2, 1000));
         try {
           const { material } = await api(`/api/materials/${mid}`);
@@ -973,6 +1016,62 @@ function importModal() {
       toast(e.message, "error");
     }
   }
+}
+
+/* ================= 处理队列（任务页） ================= */
+async function viewTasks() {
+  const v = $("#view");
+  v.innerHTML = `
+    <div class="page-head">
+      <div>
+        <div class="page-title">处理任务</div>
+        <div class="page-sub">下载、转写、生成单元逐个排队执行；正在处理的和排队的都会实时显示在这里</div>
+      </div>
+    </div>
+    <div id="task-list"></div>
+  `;
+  renderTaskList($("#task-list"));
+  // 页面停留期间定时刷新（引擎事件之外的双保险）；离开页面自动停
+  const iv = setInterval(() => {
+    if (!location.hash.startsWith("#/tasks")) { clearInterval(iv); return; }
+    renderTaskList($("#task-list"));
+  }, 2000);
+}
+
+function taskStepLabel(t) {
+  if (t.queued) return "排队中";
+  if (t.status === "error") return "处理失败";
+  return PROCESS_STEP_LABELS[t.step] || "处理中";
+}
+
+function renderTaskRows(box, tasks) {
+  if (!box) return;
+  if (!tasks.length) {
+    box.innerHTML = `<div class="empty"><div class="big">✅</div><div>没有正在处理的任务<div style="font-size:13px;color:var(--muted);margin-top:6px">去「材料 → 导入内容」下载 RSS / 音频，进度会显示在这里</div></div></div>`;
+    return;
+  }
+  box.innerHTML = tasks.map((t) => `
+    <a class="card mat-card hover" href="#/material/${t.id}" style="display:block;text-decoration:none;margin-bottom:10px">
+      <div class="mat-meta">
+        <span class="chip">${t.queued ? "⏳ 排队" : "⚙️ 处理中"}</span>
+        <span class="mat-title" style="font-size:15px;margin-left:8px">${esc(t.title)}</span>
+        <span style="margin-left:auto;color:var(--muted);font-size:12px;white-space:nowrap">${esc(taskStepLabel(t))}${t.pct > 0 ? " · " + Math.round(t.pct) + "%" : ""}</span>
+      </div>
+      <div class="progress"><i style="width:${Math.max(2, Math.round(t.pct || 0))}%"></i></div>
+      ${t.error ? `<div class="mat-desc" style="color:var(--danger)">${esc(t.error)}</div>` : ""}
+    </a>`).join("");
+}
+
+function renderTaskList(box) {
+  const eng = useLocalEngine();
+  if (eng && eng.tasksSnapshot) { renderTaskRows(box, eng.tasksSnapshot()); return; }
+  // 桌面（带后端）：从材料列表聚合 processing 状态
+  api("/api/materials").then(({ materials }) => {
+    renderTaskRows(box, materials.filter((m) => m.status === "processing").map((m) => ({
+      id: m.id, title: m.title, status: m.status, step: m.process_step,
+      pct: m.process_pct, queued: false, error: m.error,
+    })));
+  }).catch(() => renderTaskRows(box, []));
 }
 
 /* ================= 材料详情 ================= */
@@ -1039,9 +1138,9 @@ async function viewMaterial(hash) {
     });
   }
   if (m.status === "processing") {
-    // 轮询处理进度：下载 → 转写 → 建单元 → 完成
+    // 轮询处理进度：下载 → 转写 → 建单元 → 完成（放宽上限：长音频转写可达几十分钟）
     (async () => {
-      for (let i = 0; i < 120; i++) {
+      for (let i = 0; i < 3600; i++) {
         await new Promise(r => setTimeout(r, 2000));
         const node = $("#mat-proc-text");
         if (!node) return;
