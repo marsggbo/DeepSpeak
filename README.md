@@ -7,6 +7,19 @@
 
 **本地优先 · 零 API Key · 数据不出本机 · 装好就能学（内置 3 段材料：餐厅对话 / 看医生 / 慢速新闻稿）**
 
+## 下载安装包（开箱即用，识别/语音模型全内置）
+
+不想装 Python 环境？直接下载打包版，双击即用、完全离线（模型已打进包，首次使用不下载任何东西）：
+
+| 平台 | 产物（GitHub Releases） | 说明 |
+|---|---|---|
+| macOS（Apple 芯片） | `DeepSpeak-0.2.3.dmg` | 双击安装；自用不签名，首次打开右键 → 打开 |
+| Windows | `DeepSpeak.Setup.0.2.3.exe`（CI 自动构建） | 安装器，双击安装 |
+| Android | `DeepSpeak-0.2.3.apk` | 识别模型（whisper tiny+base）、库与推理内核全部打进包，导入音频转写全程离线 |
+| 网页（PWA） | `https://marsggbo.github.io/DeepSpeak` | 浏览器打开 → 「添加到主屏幕」即可当 App 用 |
+
+> 网页版没有内置模型，首次转写需联网下载一次（~40MB，之后浏览器缓存、离线可用）；APK/桌面版完全不需要。
+
 ## 快速开始
 
 **macOS / Linux**
@@ -54,19 +67,23 @@ python3 -m http.server 8531 --directory frontend
 
 | 能力 | 说明 |
 |---|---|
-| 内置材料 | 餐厅 / 看医生对话 + 慢速新闻稿（约 2.5 分钟），系统语音离线生成音频（macOS say / Windows SAPI / Linux espeak-ng），整段音频自动拼接 |
-| 整段精听 | 通听（可暂停/回退）→ 逐句听写（语音输入可选 + 草稿保存）→ 红笔校对（简单/困难模式，不显示原文）→ 跟读模仿 → 背诵脱稿 → 间隔回炉；4 步可在设置中开启「自由导航」按需跳转 |
-| 生词词组 | 校对时自动推荐听错的词（可删可留）+ 自写添加，按词条去重保存；内置 1768 词离线英汉释义（零网络），查不到可手动补释义/笔记；材料页生词本可 🔊 听原句、编辑、删除；逐句强化与复习时同句生词自动展示 |
-| 逐句强化 | 盲听 → 听写 → 对照 → 跟读 → 主动回忆（中文意图提示，想不起看原文；可选 LLM 中文回译提示），完成后可「下一句 →」连续训练 |
-| 材料归类 | 列表自动分组（全部/未开始/进行中/已掌握）+ 搜索 + 场景/来源/标签筛选；材料可自定义标签 |
-| 打卡统计 | 每日打卡（连续天数）；今日明细（听写/开口/复习/精听）、近 7 天柱状图、近 30 天热力图；选一段材料查看历次听写准确率对比曲线 |
-| 本地文件导入 | MP3/M4A/WAV/MP4/MOV/MKV + SRT/VTT/TXT，视频自动抽音频 |
-| URL 导入 | YouTube 公开字幕、Podcast RSS（选一集下载）、网页文章、音频直链；内置推荐学习源（科学 60 秒系列 / Science Quickly / BBC 6 Minute English / VOA） |
-| 本地 ASR | faster-whisper（可选安装），录音自动转写，数据不出本机 |
-| 规则引擎 | 无 AI 也能：切句、表达提取、场景分类、难度、学习价值 |
-| LLM 增强（可选） | OpenAI / Anthropic / Gemini / Ollama / 任意 OpenAI 兼容端点 |
-| API Key 安全 | macOS Keychain / 其他平台 0600 密钥文件，不写数据库；发送前明确询问 + 范围控制 |
-| 数据隐私 | 全部 SQLite 本地存储；没有服务器，不收集任何数据 |
+| 内置材料 | 餐厅 / 看医生对话 + 慢速新闻稿（约 2.5 分钟），系统语音离线生成音频（macOS say / Windows SAPI / Linux espeak-ng），整段音频自动拼接；内置材料在桌面/网页/APK 三端一致 |
+| 整段精听 | 通听（可暂停/回退 10s）→ 逐句听写（语音输入可选 + 草稿自动保存）→ 红笔校对（不显示原文，听对的绿色 / 漏写错写留白）→ 跟读模仿 → 背诵脱稿 → 间隔回炉（1/2/4/7/14/30 天）；4 步可在设置开启「自由导航」按需跳转 |
+| 逐句强化 | 盲听 → 听写 → 对照 → 跟读 → 主动回忆（中文场景提示，想不起来展原文；可选 LLM 中文回译提示），完成后「下一句 →」连续训练；句子边界为跨窗口词级缝合，时间戳按词对齐，不再出现半句/逗号断句 |
+| 生词词组 | 每句校对自动推荐听错的词（可删可留）+ 手动添加，按词条去重保存；内置 1768 词离线英汉释义（零网络），查不到可手动补；材料页生词本可听原句、编辑、删除；逐句强化与复习时同句生词自动展示 |
+| 处理队列 | 所有导入/转写任务（下载 → 转写 / 重新处理）统一进单线程队列、自动去重；侧栏「任务」页实时显示排队/处理中/失败 + 步骤 + 百分比，角标显示当前任务数；材料列表处理中自动刷新 |
+| 材料归类 | 列表分类（全部/未开始/进行中/已掌握）+ 搜索 + 场景/来源/标签 chips 筛选；材料可打标签 |
+| 打卡统计 | 每日打卡（连续天数）；今日明细 / 近 7 天柱状图 / 近 30 天热力图 / 听写准确率对比曲线；一键生成学习画像 + 可选 AI 分析 |
+| 本地文件导入 | 音频 MP3/M4A/WAV/AAC/OGG/FLAC + 视频 MP4/MOV（自动抽音）+ 字幕 SRT/VTT + 纯文本；网页/APK 端转写直接用内置 Whisper（WASM/WebGPU），全程本地 |
+| URL / RSS 导入 | Podcast RSS（选单集转写）、音频直链、YouTube 公开字幕、网页文章；内置推荐源（科学 60 秒系列 / Science Quickly / BBC 6 Minute English / VOA）；APK 原生网络绕 CORS，网页用可配置代理 |
+| 语音识别 | 桌面 faster-whisper（base.en，内置模型）；网页/APK transformers.js Whisper（tiny/base.en 两档：APK 模型已打进安装包零下载，网页首次联网缓存几十 MB 后离线可用） |
+| 语音合成 | 内置 Kokoro 神经 TTS（28 音色 × en-US/en-GB），桌面/网页/APK 同一音色同一音质，文本课文整段合成 |
+| AI 生成材料 | 10 场景 chips + 自定义描述 + 难度/轮数（2-12）/时长（30-300s）滑块随机生成整段对话（逐句配音 + 评分），可选按学习画像定制 |
+| 点词释义 | 双击任意单词/句子：离线词典 → 免费在线词典 → 可选 LLM 深度翻译/例句，四级降级零配置 |
+| 规则引擎 | 无 AI 也能：切句、表达粘贴提取、场景分类、难度、学习价值 |
+| LLM 增强（可选） | OpenAI / DeepSeek / Moonshot / 智谱 / Ollama 平台预设一键填充 base_url，任何 OpenAI 兼容端点 |
+| API Key 安全 | macOS Keychain / 其他平台 0600 密钥文件，不落库；API 使用前明确确认 + 范围控制 |
+| 数据隐私 | 全部本地存储（SQLite / IndexedDB 双实现）；没有服务器，不收集任何数据 |
 
 ## 技术架构
 
@@ -117,12 +134,21 @@ DeepSpeak/
 │   ├── index.html       # SPA 入口（manifest / SW 注册）
 │   ├── app.js           # 前端逻辑（api() 自动降级本地引擎）
 │   ├── engine.js        # 本地引擎（IndexedDB + 状态机 + 判定，纯 JS 零依赖）
+│   ├── import-engine.js # 网页/APK 导入引擎（RSS/URL 抓取 + JS Whisper 转写 + 切句）
+│   ├── transcribe-worker.js  # 后台转写 worker（transformers.js 同一套模型）
+│   ├── tts-engine.js    # 网页 TTS（Kokoro 同款模型）
+│   ├── explainer.js     # 点词释义（离线词库 → 在线词典降级）
 │   ├── engine-data.js   # 内置材料静态数据（export_builtin.py 生成）
 │   ├── recorder.js      # PCM 录音
 │   ├── sw.js            # Service Worker（离线缓存）
+│   ├── vendor/          # 本地化推理内核（transformers.js + onnxruntime wasm，离线零 CDN）
 │   ├── manifest.webmanifest / icons/  # PWA 清单与图标
 │   └── assets/audio/    # 内置材料离线音频（45 个 wav）
+├── scripts/
+│   └── fetch_js_models.py  # 下载网页端 whisper 模型到 models-js/（随 APK/桌面打包分发）
+├── android/             # Android APK 壳（Capacitor：WebView 加载 frontend/ + 内置 models/）
 ├── .github/workflows/pages.yml  # GitHub Pages 自动发布
+├── .github/workflows/build-win.yml  # tag v* 时自动构建 Windows exe 并上传 Release
 ├── docs/PRODUCT.md      # 完整产品与技术设计文档
 ├── data/                # 运行时：app.db + 密钥文件（自动创建）
 ├── materials/           # 运行时：导入音频 + TTS 缓存
@@ -148,17 +174,29 @@ DeepSpeak/
 构建步骤：
 
 1. **macOS**：`./packaging/build_mac.sh`（建侧车）→ `cd electron && CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac`（产物在 `electron/release/`）。
-2. **Windows**：在 Windows 机器上跑 `packaging\build_win.bat`，然后 `cd electron && set CSC_IDENTITY_AUTO_DISCOVERY=false && npx electron-builder --win`（会下载 NSIS，产物在 `electron\release\`）。
+2. **Windows**：在 Windows 机器本地构建，或直接打 tag（`v*`）由 GitHub Actions 自动出 `Setup.exe` 并上传到 Release。
+
+## 打包为 Android APK（Capacitor + WebView）
+
+APK 是 WebView 壳：把 `frontend/` 塞进 App 资源，与桌面/网页同一套前端。识别模型（whisper tiny.en + base.en 量化版）与推理内核（transformers.js + onnxruntime wasm）全部打进安装包——**首次转写零下载，完全离线**。
+
+```bash
+python3 scripts/fetch_js_models.py        # 下载模型到 models-js/（一次性，~280MB）
+cd android && npx cap sync               # 同步 frontend/ 与 models-js/ → src/main/assets/public/
+cd android && ./gradlew assembleDebug    # 产物在 android/app/build/outputs/apk/debug/
+```
+
+> `cap sync` 会覆盖 `assets/public/`，因此必须在 gradle 构建**之后**执行模型拷贝（或重新跑一次 `cap sync` 后再手动放模型）；APK 里网络走 Capacitor 原生 Http（天然绕过网页 CORS）。
 
 打包版的数据（数据库/导入材料/生词）存放在用户目录：macOS `~/Library/Application Support/DeepSpeak`，Windows `%APPDATA%\DeepSpeak`；首次启动自动从开发目录复制一次历史数据。可用 `DEEPSPEAK_DATA_DIR` 环境变量覆盖。开发模式（`run.sh`）行为不变，仍在项目内 `data/ materials/ models/`。
 
 ## 常见问题
 
 **为什么是网页版而不是手机 App？**
-这是跑通学习闭环最快的形态：零安装、零 API、跨平台、随时可验证。整套架构（Provider 接口、SQLite schema、状态机、调度器）按移动端可移植设计，下一步可平移到 Flutter（Share Sheet、后台处理等移动能力见 `docs/PRODUCT.md` 的迁移说明）。
+这是跑通学习闭环最快的形态：零安装、零 API、跨平台、随时可验证。现在也有 Android APK（WebView 壳，识别模型内置、离线可用），需要移动端本地文件导入/后台处理时比裸 PWA 更顺手；iOS 暂无安装包，用 PWA「添加到主屏幕」即可。
 
 **没有网络能用吗？**
-能。内置材料 + 全部训练功能离线可用。仅「首次安装 ASR」「导入 YouTube/网页」需要网络。
+能。内置材料 + 全部训练功能离线可用；APK/桌面版识别模型已内置，导入音频转写也完全离线。仅「网页版首次下载识别模型」「导入 YouTube/网页文章」需要网络。（APK 完全没有首次下载这一环。）
 
 **我想用更好的 AI 评估？**
 设置 → AI Providers 添加任意 OpenAI 兼容端点（Ollama 本地模型也行），发送前 App 会先征求你的同意。
